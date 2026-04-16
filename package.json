@@ -1,0 +1,19 @@
+{
+  "name": "midi-looper",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "serve": "node scripts/serve-dist.mjs",
+    "preview": "node scripts/serve-dist.mjs"
+  },
+  "dependencies": {
+    "tone": "^15.1.22",
+    "vite": "^7.1.7"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.2"
+  }
+}
