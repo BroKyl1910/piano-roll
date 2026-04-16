@@ -1,0 +1,170 @@
+{
+  "version": 1,
+  "bars": 5,
+  "beatsPerBar": 4,
+  "bpm": 90,
+  "events": [
+    {
+      "note": "B4",
+      "velocity": 0.88,
+      "tick": 0,
+      "durationTicks": 48,
+      "instrument": "piano",
+      "dynamics": 100,
+      "vibrato": 0
+    },
+    {
+      "note": "B5",
+      "velocity": 0.88,
+      "tick": 768,
+      "durationTicks": 768,
+      "instrument": "piano",
+      "dynamics": 100,
+      "vibrato": 0
+    },
+    {
+      "note": "B3",
+      "velocity": 0.88,
+      "tick": 1536,
+      "durationTicks": 768,
+      "instrument": "piano",
+      "dynamics": 100,
+      "vibrato": 0
+    },
+    {
+      "note": "D4",
+      "velocity": 0.88,
+      "tick": 1536,
+      "durationTicks": 768,
+      "instrument": "piano",
+      "dynamics": 100,
+      "vibrato": 0
+    },
+    {
+      "note": "F#4",
+      "velocity": 0.88,
+      "tick": 1536,
+      "durationTicks": 768,
+      "instrument": "piano",
+      "dynamics": 100,
+      "vibrato": 0
+    },
+    {
+      "note": "D5",
+      "velocity": 0.88,
+      "tick": 1536,
+      "durationTicks": 960,
+      "instrument": "piano",
+      "dynamics": 100,
+      "vibrato": 0
+    },
+    {
+      "note": "A3",
+      "velocity": 0.88,
+      "tick": 1536,
+      "durationTicks": 768,
+      "instrument": "piano",
+      "dynamics": 100,
+      "vibrato": 0
+    },
+    {
+      "note": "A4",
+      "velocity": 0.88,
+      "tick": 2304,
+      "durationTicks": 768,
+      "instrument": "piano",
+      "dynamics": 100,
+      "vibrato": 0
+    },
+    {
+      "note": "C4",
+      "velocity": 0.88,
+      "tick": 2304,
+      "durationTicks": 768,
+      "instrument": "piano",
+      "dynamics": 100,
+      "vibrato": 0
+    },
+    {
+      "note": "G#4",
+      "velocity": 0.88,
+      "tick": 3072,
+      "durationTicks": 768,
+      "instrument": "piano",
+      "dynamics": 100,
+      "vibrato": 0
+    },
+    {
+      "note": "E4",
+      "velocity": 0.88,
+      "tick": 3072,
+      "durationTicks": 768,
+      "instrument": "piano",
+      "dynamics": 100,
+      "vibrato": 0
+    },
+    {
+      "note": "C4",
+      "velocity": 0.88,
+      "tick": 3072,
+      "durationTicks": 768,
+      "instrument": "piano",
+      "dynamics": 100,
+      "vibrato": 0
+    },
+    {
+      "note": "B4",
+      "velocity": 0.88,
+      "tick": 48,
+      "durationTicks": 912,
+      "instrument": "piano",
+      "dynamics": 100,
+      "vibrato": 0
+    }
+  ],
+  "stepDivisions": [
+    [
+      0,
+      "1/16"
+    ]
+  ],
+  "rolledSteps": [
+    0,
+    8
+  ],
+  "loopStartBar": 0,
+  "loopEndBar": 4,
+  "loopSelectionEnabled": false,
+  "selectedKey": "none",
+  "selectedInstrument": "piano",
+  "instrumentSettings": [
+    [
+      "piano",
+      {
+        "dynamics": 100,
+        "vibrato": 0
+      }
+    ],
+    [
+      "flute",
+      {
+        "dynamics": 100,
+        "vibrato": 0
+      }
+    ],
+    [
+      "violin",
+      {
+        "dynamics": 100,
+        "vibrato": 0
+      }
+    ],
+    [
+      "cello",
+      {
+        "dynamics": 100,
+        "vibrato": 0
+      }
+    ]
+  ]
+}

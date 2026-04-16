@@ -18,6 +18,8 @@ type LoopedNote = {
   velocity: number;
   tick: number;
   durationTicks: number;
+  dynamics?: number;
+  vibrato?: number;
 };
 
 type InstrumentId = "piano" | "flute" | "violin" | "cello";
@@ -63,6 +65,12 @@ type InstrumentVoice = {
   sampler: Tone.Sampler;
   vibrato: Tone.Vibrato;
   volume: Tone.Volume;
+};
+
+type SelectedSoundSegment = {
+  note: string;
+  instrument: InstrumentId;
+  tick: number;
 };
 
 type SavedRoll = {
@@ -186,17 +194,18 @@ app.innerHTML = `
             </span>
             <input id="vibratoInput" type="range" min="0" max="100" step="1" value="0" />
           </label>
+          <div class="instrument-scope" id="instrumentScope">New notes</div>
         </section>
         <div class="button-row">
           <button class="primary-button" id="playButton" type="button">Start</button>
           <button class="secondary-button" id="clearButton" type="button">Clear</button>
         </div>
         <div class="utility-row">
-          <button class="secondary-button" id="midiButton" type="button">Enable MIDI</button>
           <button class="secondary-button" id="saveButton" type="button">Save Roll</button>
           <button class="secondary-button" id="loadButton" type="button">Load File</button>
           <button class="secondary-button" id="reloadLastButton" type="button">Reload Last Save</button>
         </div>
+        <button class="secondary-button hidden-midi-button" id="midiButton" type="button">Enable MIDI</button>
         <input class="file-input" id="rollFileInput" type="file" accept="application/json,.json" />
       </div>
 
@@ -224,6 +233,7 @@ app.innerHTML = `
           <div class="roll-grid" id="rollGrid"></div>
         </div>
         <div class="roll-minimap" id="rollMinimap" aria-label="Note overview"></div>
+        <div class="roll-time-minimap" id="rollTimeMinimap" aria-label="Time overview"></div>
       </section>
 
       <div class="events" id="statusText">Piano loading. Click any cell to preview its pitch.</div>
@@ -245,6 +255,7 @@ const rollHeader = queryElement<HTMLDivElement>("#rollHeader");
 const rollGrid = queryElement<HTMLDivElement>("#rollGrid");
 const rollScroll = queryElement<HTMLDivElement>("#rollScroll");
 const rollMinimap = queryElement<HTMLDivElement>("#rollMinimap");
+const rollTimeMinimap = queryElement<HTMLDivElement>("#rollTimeMinimap");
 const statusText = queryElement<HTMLDivElement>("#statusText");
 const eventCount = queryElement<HTMLElement>("#eventCount");
 const bpmValue = queryElement<HTMLElement>("#bpmValue");
@@ -261,6 +272,7 @@ const dynamicsInput = queryElement<HTMLInputElement>("#dynamicsInput");
 const dynamicsValue = queryElement<HTMLElement>("#dynamicsValue");
 const vibratoInput = queryElement<HTMLInputElement>("#vibratoInput");
 const vibratoValue = queryElement<HTMLElement>("#vibratoValue");
+const instrumentScope = queryElement<HTMLElement>("#instrumentScope");
 
 const piano = new Tone.Sampler({
   urls: {
@@ -398,6 +410,7 @@ let lastPointerClientY = 0;
 let barSelectionAnchor: number | null = null;
 let barSelectionMoved = false;
 let suppressNextBarCue = false;
+let selectedSoundSegment: SelectedSoundSegment | null = null;
 
 const looper: FourBarMidiLooper = {
   bars: 4,
@@ -556,6 +569,7 @@ const looper: FourBarMidiLooper = {
   },
   setSelectedInstrument(instrument: InstrumentId) {
     this.selectedInstrument = getValidInstrumentId(instrument);
+    clearSelectedSoundSegment();
     instrumentSelect.value = this.selectedInstrument;
     renderInstrumentControls();
     const selectedInstrument = this.selectedInstrument;
@@ -601,6 +615,7 @@ const looper: FourBarMidiLooper = {
   },
   addNoteAtTick(note: string, tick: number, durationTicks: number, render = true) {
     const instrument = this.selectedInstrument;
+    const expression = getInstrumentSettings(instrument);
     const alreadyPlaced = this.events.some((event) => getEventInstrument(event) === instrument && event.note === note && tick >= event.tick && tick < event.tick + event.durationTicks);
 
     if (alreadyPlaced) {
@@ -608,8 +623,18 @@ const looper: FourBarMidiLooper = {
       return;
     }
 
-    const previousEvent = this.events.find((event) => getEventInstrument(event) === instrument && event.note === note && event.tick + event.durationTicks === tick);
-    const nextEvent = this.events.find((event) => getEventInstrument(event) === instrument && event.note === note && event.tick === tick + durationTicks);
+    const previousEvent = this.events.find((event) => {
+      return getEventInstrument(event) === instrument
+        && event.note === note
+        && event.tick + event.durationTicks === tick
+        && eventsHaveSameExpression(event, expression);
+    });
+    const nextEvent = this.events.find((event) => {
+      return getEventInstrument(event) === instrument
+        && event.note === note
+        && event.tick === tick + durationTicks
+        && eventsHaveSameExpression(event, expression);
+    });
 
     if (previousEvent && nextEvent) {
       previousEvent.durationTicks += durationTicks + nextEvent.durationTicks;
@@ -625,7 +650,9 @@ const looper: FourBarMidiLooper = {
         instrument,
         velocity: 0.88,
         tick,
-        durationTicks
+        durationTicks,
+        dynamics: expression.dynamics,
+        vibrato: expression.vibrato
       });
     }
 
@@ -659,8 +686,11 @@ const looper: FourBarMidiLooper = {
       instrument,
       velocity: event.velocity,
       tick,
-      durationTicks: originalEndTick - tick
+      durationTicks: originalEndTick - tick,
+      dynamics: getEventDynamics(event),
+      vibrato: getEventVibrato(event)
     });
+    selectSoundSegment(note, instrument, tick);
     statusText.textContent = `${getInstrumentLabel(instrument)} ${note} retriggers on ${formatTick(tick)}.`;
     updateEventCount();
     renderChordHeader();
@@ -694,8 +724,14 @@ const looper: FourBarMidiLooper = {
         instrument,
         velocity: event.velocity,
         tick: tick + durationTicks,
-        durationTicks: rightDurationTicks
+        durationTicks: rightDurationTicks,
+        dynamics: getEventDynamics(event),
+        vibrato: getEventVibrato(event)
       });
+    }
+
+    if (selectedSoundSegment && !findSelectedSoundSegmentEvent()) {
+      clearSelectedSoundSegment();
     }
 
     statusText.textContent = `${getInstrumentLabel(instrument)} ${note} removed from ${formatTick(tick)}.`;
@@ -753,7 +789,7 @@ Tone.Transport.scheduleRepeat((time) => {
 
   dueEvents.forEach((event, index) => {
     const rollOffset = looper.rolledSteps.has(step) ? index * 0.035 : 0;
-    triggerInstrument(getEventInstrument(event), event.note, ticksToSeconds(event.durationTicks), time + rollOffset, event.velocity);
+    triggerInstrument(getEventInstrument(event), event.note, ticksToSeconds(event.durationTicks), time + rollOffset, getEventVelocity(event), getEventExpression(event));
   });
 }, `${transportPulseTicks}i`);
 
@@ -763,6 +799,14 @@ renderRollHeader();
 renderBeatEditor();
 
 rollGrid.addEventListener("click", (event) => {
+  const noteHeader = (event.target as HTMLElement).closest<HTMLElement>(".roll-note[data-note]");
+
+  if (noteHeader?.dataset.note) {
+    clearSelectedSoundSegment();
+    looper.previewNote(noteHeader.dataset.note);
+    return;
+  }
+
   const target = getRollCell(event.target);
 
   if (!target || event.detail > 1) {
@@ -770,6 +814,18 @@ rollGrid.addEventListener("click", (event) => {
   }
 
   const note = target.dataset.note ?? "C4";
+  const tick = Number(target.dataset.tick);
+  const selectedEvent = getActiveEventsAtTick(note, tick).find((event) => getEventInstrument(event) === looper.selectedInstrument);
+
+  if (selectedEvent) {
+    selectSoundSegment(selectedEvent.note, getEventInstrument(selectedEvent), selectedEvent.tick);
+    window.clearTimeout(previewClickTimer);
+    statusText.textContent = `${getInstrumentLabel(getEventInstrument(selectedEvent))} ${selectedEvent.note} segment selected.`;
+    return;
+  } else {
+    clearSelectedSoundSegment();
+  }
+
   window.clearTimeout(previewClickTimer);
   previewClickTimer = window.setTimeout(() => {
     looper.previewNote(note);
@@ -1018,6 +1074,14 @@ rollMinimap.addEventListener("click", (event) => {
   rollScroll.scrollTop = Math.max(0, Math.min(maxScrollTop, ratio * maxScrollTop));
 });
 
+rollTimeMinimap.addEventListener("click", (event) => {
+  const rect = rollTimeMinimap.getBoundingClientRect();
+  const ratio = rect.width > 0 ? (event.clientX - rect.left) / rect.width : 0;
+  const maxScrollLeft = rollScroll.scrollWidth - rollScroll.clientWidth;
+
+  rollScroll.scrollLeft = Math.max(0, Math.min(maxScrollLeft, ratio * maxScrollLeft));
+});
+
 window.addEventListener("resize", () => {
   updateMinimapViewport();
 });
@@ -1247,6 +1311,8 @@ function isSavedNote(event: Partial<LoopedNote>): event is LoopedNote {
     && Number.isFinite(event.velocity)
     && Number.isFinite(event.tick)
     && Number.isFinite(event.durationTicks)
+    && (event.dynamics === undefined || Number.isFinite(event.dynamics))
+    && (event.vibrato === undefined || Number.isFinite(event.vibrato))
     && typeof event.tick === "number"
     && typeof event.durationTicks === "number"
     && event.tick >= 0
@@ -1256,7 +1322,9 @@ function isSavedNote(event: Partial<LoopedNote>): event is LoopedNote {
 function normalizeSavedEvent(event: LoopedNote): LoopedNote {
   return {
     ...event,
-    instrument: getEventInstrument(event)
+    instrument: getEventInstrument(event),
+    dynamics: clampPercent(event.dynamics ?? 100, 0, 120),
+    vibrato: clampPercent(event.vibrato ?? 0, 0, 100)
   };
 }
 
@@ -1348,7 +1416,71 @@ function getInstrumentSettings(instrument: InstrumentId): InstrumentSettings {
   return defaultSettings;
 }
 
+function getEventExpression(event: LoopedNote): InstrumentSettings {
+  return {
+    dynamics: getEventDynamics(event),
+    vibrato: getEventVibrato(event)
+  };
+}
+
+function getEventDynamics(event: LoopedNote): number {
+  return clampPercent(event.dynamics ?? getInstrumentSettings(getEventInstrument(event)).dynamics, 0, 120);
+}
+
+function getEventVibrato(event: LoopedNote): number {
+  return clampPercent(event.vibrato ?? getInstrumentSettings(getEventInstrument(event)).vibrato, 0, 100);
+}
+
+function getEventVelocity(event: LoopedNote): number {
+  return Math.min(1, event.velocity * (getEventDynamics(event) / 100));
+}
+
+function eventsHaveSameExpression(event: LoopedNote, expression: InstrumentSettings): boolean {
+  return getEventDynamics(event) === expression.dynamics && getEventVibrato(event) === expression.vibrato;
+}
+
+function selectSoundSegment(note: string, instrument: InstrumentId, tick: number): void {
+  selectedSoundSegment = { note, instrument, tick };
+  renderInstrumentControls();
+  renderRoll();
+}
+
+function clearSelectedSoundSegment(): void {
+  if (!selectedSoundSegment) {
+    renderInstrumentControls();
+    return;
+  }
+
+  const previousNote = selectedSoundSegment.note;
+
+  selectedSoundSegment = null;
+  renderInstrumentControls();
+  updateRollRow(previousNote);
+}
+
+function findSelectedSoundSegmentEvent(): LoopedNote | null {
+  if (!selectedSoundSegment) {
+    return null;
+  }
+
+  return looper.events.find((event) => {
+    return event.note === selectedSoundSegment?.note
+      && getEventInstrument(event) === selectedSoundSegment.instrument
+      && event.tick === selectedSoundSegment.tick;
+  }) ?? null;
+}
+
 function setInstrumentDynamics(instrument: InstrumentId, value: number): void {
+  const selectedEvent = findSelectedSoundSegmentEvent();
+
+  if (selectedEvent && getEventInstrument(selectedEvent) === instrument) {
+    selectedEvent.dynamics = clampPercent(value, 0, 120);
+    renderInstrumentControls();
+    updateRollRow(selectedEvent.note);
+    statusText.textContent = `${getInstrumentLabel(instrument)} ${selectedEvent.note} segment dynamics ${selectedEvent.dynamics}%.`;
+    return;
+  }
+
   const settings = getInstrumentSettings(instrument);
 
   settings.dynamics = clampPercent(value, 0, 120);
@@ -1358,6 +1490,16 @@ function setInstrumentDynamics(instrument: InstrumentId, value: number): void {
 }
 
 function setInstrumentVibrato(instrument: InstrumentId, value: number): void {
+  const selectedEvent = findSelectedSoundSegmentEvent();
+
+  if (selectedEvent && getEventInstrument(selectedEvent) === instrument) {
+    selectedEvent.vibrato = clampPercent(value, 0, 100);
+    renderInstrumentControls();
+    updateRollRow(selectedEvent.note);
+    statusText.textContent = `${getInstrumentLabel(instrument)} ${selectedEvent.note} segment vibrato ${selectedEvent.vibrato}%.`;
+    return;
+  }
+
   const settings = getInstrumentSettings(instrument);
 
   settings.vibrato = clampPercent(value, 0, 100);
@@ -1518,11 +1660,17 @@ function updateRollRow(note: string): void {
     const isStart = activeEvents.some((event) => event.tick === tick);
     const isSelectedInstrumentActive = Boolean(selectedEvent);
     const isSelectedInstrumentStart = selectedEvent?.tick === tick;
+    const isSelectedSegment = selectedEvent
+      ? selectedSoundSegment?.note === selectedEvent.note
+        && selectedSoundSegment.instrument === getEventInstrument(selectedEvent)
+        && selectedSoundSegment.tick === selectedEvent.tick
+      : false;
 
     cell.classList.toggle("is-active", isActive);
     cell.classList.toggle("is-note-start", Boolean(isStart));
     cell.classList.toggle("is-selected-instrument-active", isSelectedInstrumentActive);
     cell.classList.toggle("is-selected-instrument-start", Boolean(isSelectedInstrumentStart));
+    cell.classList.toggle("is-selected-segment", isSelectedSegment);
     cell.classList.toggle("is-note-hold", isSelectedInstrumentActive && !isSelectedInstrumentStart);
     cell.setAttribute("aria-pressed", String(isActive));
     cell.innerHTML = renderInstrumentBands(activeEvents, tick);
@@ -1646,7 +1794,10 @@ function renderInstrumentSelect(): void {
 }
 
 function renderInstrumentControls(): void {
-  const settings = getInstrumentSettings(looper.selectedInstrument);
+  const selectedEvent = findSelectedSoundSegmentEvent();
+  const settings = selectedEvent && getEventInstrument(selectedEvent) === looper.selectedInstrument
+    ? getEventExpression(selectedEvent)
+    : getInstrumentSettings(looper.selectedInstrument);
   const instrumentColor = getInstrumentColor(looper.selectedInstrument);
 
   instrumentSwatch.style.background = instrumentColor;
@@ -1655,6 +1806,9 @@ function renderInstrumentControls(): void {
   dynamicsValue.textContent = `${settings.dynamics}%`;
   vibratoInput.value = String(settings.vibrato);
   vibratoValue.textContent = `${settings.vibrato}%`;
+  instrumentScope.textContent = selectedEvent && getEventInstrument(selectedEvent) === looper.selectedInstrument
+    ? `${selectedEvent.note} at ${formatTick(selectedEvent.tick)}`
+    : "New notes";
 }
 
 function getSelectedKeyOption(): (typeof keyOptions)[number] | undefined {
@@ -1851,12 +2005,19 @@ function playNote(instrument: InstrumentId, note: string, velocity: number, dura
   void Tone.start().then(async () => {
     await ensureInstrumentSamples(instrument);
     await Tone.loaded();
-    triggerInstrument(instrument, note, duration, undefined, velocity);
+    triggerInstrument(instrument, note, duration, undefined, velocity * (getInstrumentSettings(instrument).dynamics / 100), getInstrumentSettings(instrument));
   });
 }
 
-function triggerInstrument(instrument: InstrumentId, note: string, duration: Tone.Unit.Time, time?: Tone.Unit.Time, velocity?: number): void {
-  instrumentVoices[instrument]?.sampler.triggerAttackRelease(note, duration, time, velocity);
+function triggerInstrument(instrument: InstrumentId, note: string, duration: Tone.Unit.Time, time?: Tone.Unit.Time, velocity?: number, expression?: InstrumentSettings): void {
+  const voice = instrumentVoices[instrument];
+
+  if (!voice) {
+    return;
+  }
+
+  applyInstrumentSettingsToVoice(instrument, voice, expression, time);
+  voice.sampler.triggerAttackRelease(note, duration, time, velocity);
 }
 
 async function loadNeededInstrumentSamples(): Promise<void> {
@@ -1970,15 +2131,24 @@ function applyInstrumentSettings(instrument: InstrumentId): void {
   applyInstrumentSettingsToVoice(instrument, voice);
 }
 
-function applyInstrumentSettingsToVoice(instrument: InstrumentId, voice: InstrumentVoice): void {
+function applyInstrumentSettingsToVoice(instrument: InstrumentId, voice: InstrumentVoice, expression = getInstrumentSettings(instrument), time?: Tone.Unit.Time): void {
   const option = getInstrumentOption(instrument);
-  const settings = getInstrumentSettings(instrument);
-  const dynamicsGain = Math.max(0.001, settings.dynamics / 100);
-  const vibratoAmount = settings.vibrato / 100;
+  const dynamicsGain = Math.max(0.001, expression.dynamics / 100);
+  const vibratoAmount = expression.vibrato / 100;
+  const volumeDb = option.volumeDb + 20 * Math.log10(dynamicsGain);
+  const vibratoDepth = vibratoAmount * 0.35;
+  const vibratoWet = vibratoAmount === 0 ? 0 : Math.min(0.7, vibratoAmount);
 
-  voice.volume.volume.value = option.volumeDb + 20 * Math.log10(dynamicsGain);
-  voice.vibrato.depth.value = vibratoAmount * 0.35;
-  voice.vibrato.wet.value = vibratoAmount === 0 ? 0 : Math.min(0.7, vibratoAmount);
+  if (time === undefined) {
+    voice.volume.volume.value = volumeDb;
+    voice.vibrato.depth.value = vibratoDepth;
+    voice.vibrato.wet.value = vibratoWet;
+    return;
+  }
+
+  voice.volume.volume.setValueAtTime(volumeDb, time);
+  voice.vibrato.depth.setValueAtTime(vibratoDepth, time);
+  voice.vibrato.wet.setValueAtTime(vibratoWet, time);
 }
 
 function renderProgress(): void {
@@ -2188,6 +2358,11 @@ function renderRoll(): void {
         const isStart = activeEvents.some((event) => event.tick === slot.tick);
         const isSelectedInstrumentActive = Boolean(selectedEvent);
         const isSelectedInstrumentStart = selectedEvent?.tick === slot.tick;
+        const isSelectedSegment = selectedEvent
+          ? selectedSoundSegment?.note === selectedEvent.note
+            && selectedSoundSegment.instrument === getEventInstrument(selectedEvent)
+            && selectedSoundSegment.tick === selectedEvent.tick
+          : false;
         const subbeatLabel = slot.parts > 1 ? `, part ${slot.subdivision + 1} of ${slot.parts}` : "";
         const instrumentLabel = activeEvents.length > 0
           ? `, ${activeEvents.map((event) => getInstrumentLabel(getEventInstrument(event))).join(" and ")}`
@@ -2195,7 +2370,7 @@ function renderRoll(): void {
 
         return `
           <button
-            class="roll-cell ${isActive ? "is-active" : ""} ${isStart ? "is-note-start" : ""} ${isSelectedInstrumentActive ? "is-selected-instrument-active" : ""} ${isSelectedInstrumentStart ? "is-selected-instrument-start" : ""} ${isSelectedInstrumentActive && !isSelectedInstrumentStart ? "is-note-hold" : ""} ${slot.subdivision === 0 ? "is-beat-start" : ""} ${slot.subdivision === 0 && isBarStart(slot.step) ? "is-bar-start" : ""} ${isOctaveStart(note) ? "is-octave-start" : ""} ${isBlackKey(note) ? "is-black-key" : ""}"
+            class="roll-cell ${isActive ? "is-active" : ""} ${isStart ? "is-note-start" : ""} ${isSelectedInstrumentActive ? "is-selected-instrument-active" : ""} ${isSelectedSegment ? "is-selected-segment" : ""} ${isSelectedInstrumentStart ? "is-selected-instrument-start" : ""} ${isSelectedInstrumentActive && !isSelectedInstrumentStart ? "is-note-hold" : ""} ${slot.subdivision === 0 ? "is-beat-start" : ""} ${slot.subdivision === 0 && isBarStart(slot.step) ? "is-bar-start" : ""} ${isOctaveStart(note) ? "is-octave-start" : ""} ${isBlackKey(note) ? "is-black-key" : ""}"
             type="button"
             aria-pressed="${isActive}"
             aria-label="${note}, ${formatStep(slot.step)}${subbeatLabel}${instrumentLabel}"
@@ -2228,6 +2403,7 @@ function renderRoll(): void {
 
 function renderMinimap(): void {
   const notesWithEvents = new Set(looper.events.map((event) => event.note));
+  const slots = getGridSlots();
 
   rollMinimap.innerHTML = `
     <div class="minimap-lane" style="grid-template-rows: repeat(${pianoRollNotes.length}, minmax(0, 1fr));">
@@ -2244,6 +2420,30 @@ function renderMinimap(): void {
         })
         .join("")}
       <div class="minimap-viewport" aria-hidden="true"></div>
+    </div>
+  `;
+
+  rollTimeMinimap.innerHTML = `
+    <div class="time-minimap-lane" style="grid-template-columns: repeat(${slots.length}, minmax(0, 1fr));">
+      ${slots.map((slot) => {
+        const activeEvents = looper.events.filter((event) => slot.tick >= event.tick && slot.tick < event.tick + event.durationTicks);
+        const instruments = Array.from(new Set(activeEvents.map((event) => getEventInstrument(event))));
+        const startsBar = slot.subdivision === 0 && isBarStart(slot.step);
+
+        return `
+          <button
+            class="time-minimap-step ${activeEvents.length > 0 ? "has-notes" : ""} ${startsBar ? "is-bar-start" : ""}"
+            type="button"
+            aria-label="${formatTick(slot.tick)}"
+            data-minimap-tick="${slot.tick}"
+          >
+            ${instruments.map((instrument) => `
+              <span class="time-minimap-band" style="background: ${getInstrumentColor(instrument)};"></span>
+            `).join("")}
+          </button>
+        `;
+      }).join("")}
+      <div class="time-minimap-viewport" aria-hidden="true"></div>
     </div>
   `;
 
@@ -2270,12 +2470,15 @@ function renderInstrumentBands(events: LoopedNote[], tick: number): string {
       ${events.map((event) => {
         const instrument = getEventInstrument(event);
         const isStart = event.tick === tick;
+        const isSelectedSegment = selectedSoundSegment?.note === event.note
+          && selectedSoundSegment.instrument === instrument
+          && selectedSoundSegment.tick === event.tick;
 
         return `
           <span
-            class="instrument-band ${isStart ? "is-band-start" : "is-band-hold"}"
+            class="instrument-band ${isStart ? "is-band-start" : "is-band-hold"} ${isSelectedSegment ? "is-selected-segment" : ""}"
             data-instrument="${instrument}"
-            title="${getInstrumentLabel(instrument)}"
+            title="${getInstrumentLabel(instrument)} ${getEventDynamics(event)}% dynamics, ${getEventVibrato(event)}% vibrato"
             style="background: ${getInstrumentColor(instrument)};"
           ></span>
         `;
@@ -2328,21 +2531,33 @@ function scrollRollToNote(note: string): void {
 
 function updateMinimapViewport(): void {
   const viewport = rollMinimap.querySelector<HTMLElement>(".minimap-viewport");
+  const timeViewport = rollTimeMinimap.querySelector<HTMLElement>(".time-minimap-viewport");
 
-  if (!viewport) {
-    return;
+  if (viewport) {
+    const scrollHeight = rollScroll.scrollHeight;
+    const clientHeight = rollScroll.clientHeight;
+    const viewportHeight = scrollHeight > 0 ? Math.min(100, Math.max(6, (clientHeight / scrollHeight) * 100)) : 100;
+    const maxTop = 100 - viewportHeight;
+    const viewportTop = scrollHeight > clientHeight
+      ? Math.min(maxTop, Math.max(0, (rollScroll.scrollTop / scrollHeight) * 100))
+      : 0;
+
+    viewport.style.top = `${viewportTop}%`;
+    viewport.style.height = `${viewportHeight}%`;
   }
 
-  const scrollHeight = rollScroll.scrollHeight;
-  const clientHeight = rollScroll.clientHeight;
-  const viewportHeight = scrollHeight > 0 ? Math.min(100, Math.max(6, (clientHeight / scrollHeight) * 100)) : 100;
-  const maxTop = 100 - viewportHeight;
-  const viewportTop = scrollHeight > clientHeight
-    ? Math.min(maxTop, Math.max(0, (rollScroll.scrollTop / scrollHeight) * 100))
-    : 0;
+  if (timeViewport) {
+    const scrollWidth = rollScroll.scrollWidth;
+    const clientWidth = rollScroll.clientWidth;
+    const viewportWidth = scrollWidth > 0 ? Math.min(100, Math.max(6, (clientWidth / scrollWidth) * 100)) : 100;
+    const maxLeft = 100 - viewportWidth;
+    const viewportLeft = scrollWidth > clientWidth
+      ? Math.min(maxLeft, Math.max(0, (rollScroll.scrollLeft / scrollWidth) * 100))
+      : 0;
 
-  viewport.style.top = `${viewportTop}%`;
-  viewport.style.height = `${viewportHeight}%`;
+    timeViewport.style.left = `${viewportLeft}%`;
+    timeViewport.style.width = `${viewportWidth}%`;
+  }
 }
 
 function updateEventCount(): void {
