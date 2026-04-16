@@ -41,6 +41,10 @@ type SavedRoll = {
   events: LoopedNote[];
   stepDivisions: Array<[number, BeatDivision]>;
   rolledSteps: number[];
+  loopStartBar?: number;
+  loopEndBar?: number;
+  loopSelectionEnabled?: boolean;
+  selectedKey?: string;
 };
 
 interface FourBarMidiLooper {
@@ -48,6 +52,10 @@ interface FourBarMidiLooper {
   beatsPerBar: number;
   bpm: number;
   isPlaying: boolean;
+  loopStartBar: number;
+  loopEndBar: number;
+  loopSelectionEnabled: boolean;
+  selectedKey: string;
   rolledSteps: Set<number>;
   selectedStep: number | null;
   stepDivisions: Map<number, BeatDivision>;
@@ -59,6 +67,9 @@ interface FourBarMidiLooper {
   insertBar(barIndex: number): void;
   removeBar(barIndex: number): void;
   cueBar(barIndex: number): void;
+  setLoopRange(startBar: number, endBar: number): void;
+  setLoopSelectionEnabled(enabled: boolean): void;
+  setSelectedKey(key: string): void;
   selectStep(step: number): void;
   setSelectedBeatDivision(division: BeatDivision): void;
   setBpm(bpm: number): void;
@@ -94,6 +105,29 @@ app.innerHTML = `
           <div class="division-buttons" id="divisionButtons" aria-label="Beat length"></div>
           <button class="secondary-button roll-selected-button" id="rollSelectedButton" type="button">Roll selected beat</button>
         </section>
+        <section class="loop-editor" aria-label="Loop range controls">
+          <span class="meta-label">Loop Range</span>
+          <div class="loop-range-inputs">
+            <label>
+              <span>From</span>
+              <input id="loopFromInput" type="number" min="1" max="4" step="1" value="1" />
+            </label>
+            <label>
+              <span>To</span>
+              <input id="loopToInput" type="number" min="1" max="4" step="1" value="4" />
+            </label>
+          </div>
+          <label class="loop-checkbox">
+            <input id="loopSelectionCheckbox" type="checkbox" />
+            <span>Loop selection</span>
+          </label>
+        </section>
+        <section class="key-editor" aria-label="Key guide controls">
+          <label>
+            <span class="meta-label">Key Guide</span>
+            <select id="keySelect"></select>
+          </label>
+        </section>
         <div class="button-row">
           <button class="primary-button" id="playButton" type="button">Start</button>
           <button class="secondary-button" id="clearButton" type="button">Clear</button>
@@ -101,8 +135,10 @@ app.innerHTML = `
         <div class="utility-row">
           <button class="secondary-button" id="midiButton" type="button">Enable MIDI</button>
           <button class="secondary-button" id="saveButton" type="button">Save Roll</button>
-          <button class="secondary-button" id="loadButton" type="button">Load Roll</button>
+          <button class="secondary-button" id="loadButton" type="button">Load File</button>
+          <button class="secondary-button" id="reloadLastButton" type="button">Reload Last Save</button>
         </div>
+        <input class="file-input" id="rollFileInput" type="file" accept="application/json,.json" />
       </div>
 
       <div class="meta" aria-live="polite">
@@ -128,6 +164,7 @@ app.innerHTML = `
           <div class="roll-header" id="rollHeader"></div>
           <div class="roll-grid" id="rollGrid"></div>
         </div>
+        <div class="roll-minimap" id="rollMinimap" aria-label="Note overview"></div>
       </section>
 
       <div class="events" id="statusText">Piano loading. Click any cell to preview its pitch.</div>
@@ -140,18 +177,25 @@ const clearButton = queryButton("#clearButton");
 const midiButton = queryButton("#midiButton");
 const saveButton = queryButton("#saveButton");
 const loadButton = queryButton("#loadButton");
+const reloadLastButton = queryButton("#reloadLastButton");
+const rollFileInput = queryElement<HTMLInputElement>("#rollFileInput");
 const tempoInput = queryElement<HTMLInputElement>("#tempoInput");
 const barHeader = queryElement<HTMLDivElement>("#barHeader");
 const chordHeader = queryElement<HTMLDivElement>("#chordHeader");
 const rollHeader = queryElement<HTMLDivElement>("#rollHeader");
 const rollGrid = queryElement<HTMLDivElement>("#rollGrid");
 const rollScroll = queryElement<HTMLDivElement>("#rollScroll");
+const rollMinimap = queryElement<HTMLDivElement>("#rollMinimap");
 const statusText = queryElement<HTMLDivElement>("#statusText");
 const eventCount = queryElement<HTMLElement>("#eventCount");
 const bpmValue = queryElement<HTMLElement>("#bpmValue");
 const selectedBeatLabel = queryElement<HTMLElement>("#selectedBeatLabel");
 const divisionButtons = queryElement<HTMLDivElement>("#divisionButtons");
 const rollSelectedButton = queryButton("#rollSelectedButton");
+const loopFromInput = queryElement<HTMLInputElement>("#loopFromInput");
+const loopToInput = queryElement<HTMLInputElement>("#loopToInput");
+const loopSelectionCheckbox = queryElement<HTMLInputElement>("#loopSelectionCheckbox");
+const keySelect = queryElement<HTMLSelectElement>("#keySelect");
 
 const piano = new Tone.Sampler({
   urls: {
@@ -184,6 +228,13 @@ const beatDivisionOptions: Array<{ value: BeatDivision; label: string; ticks: nu
   { value: "triplet", label: "Triplet", ticks: beatTicks / 3, parts: 3 }
 ];
 const pitchClassNames = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+const keyOptions = [
+  { value: "none", label: "Off", root: null, intervals: [] },
+  ...pitchClassNames.flatMap((root, index) => [
+    { value: `${index}:major`, label: `${root} major`, root: index, intervals: [0, 2, 4, 5, 7, 9, 11] },
+    { value: `${index}:minor`, label: `${root} minor`, root: index, intervals: [0, 2, 3, 5, 7, 8, 10] }
+  ])
+];
 const chordTemplates: ChordTemplate[] = [
   { suffix: "13sus4", intervals: [0, 2, 5, 7, 9, 10] },
   { suffix: "maj13", intervals: [0, 2, 4, 7, 9, 11] },
@@ -241,12 +292,19 @@ let lastLeftClickTime = 0;
 let autoScrollAnimationId = 0;
 let lastPointerClientX = 0;
 let lastPointerClientY = 0;
+let barSelectionAnchor: number | null = null;
+let barSelectionMoved = false;
+let suppressNextBarCue = false;
 
 const looper: FourBarMidiLooper = {
   bars: 4,
   beatsPerBar: 4,
   bpm: 90,
   isPlaying: false,
+  loopStartBar: 0,
+  loopEndBar: 3,
+  loopSelectionEnabled: false,
+  selectedKey: "none",
   rolledSteps: new Set<number>(),
   selectedStep: null,
   stepDivisions: new Map<number, BeatDivision>(),
@@ -259,6 +317,10 @@ const looper: FourBarMidiLooper = {
   async start() {
     await Tone.start();
     await Tone.loaded();
+    applyTransportLoop();
+    if (this.loopSelectionEnabled && !isTickInsideLoopRange(Tone.Transport.ticks)) {
+      Tone.Transport.ticks = getLoopStartTick();
+    }
     Tone.Transport.ticks = getCurrentTick();
     Tone.Transport.start();
     this.isPlaying = true;
@@ -299,12 +361,14 @@ const looper: FourBarMidiLooper = {
     this.stepDivisions = shiftStepMapAfterInsertedBar(this.stepDivisions, insertStep);
     this.rolledSteps = shiftStepSetAfterInsertedBar(this.rolledSteps, insertStep);
     this.selectedStep = getShiftedSelectedStepAfterInsert(this.selectedStep, insertStep);
+    shiftLoopRangeAfterInsertedBar(clampedBarIndex);
     this.bars += 1;
     totalSteps = this.bars * this.beatsPerBar;
-    Tone.Transport.loopEnd = `${this.bars}m`;
+    applyTransportLoop();
     Tone.Transport.ticks = 0;
     clearPlayhead();
     renderBeatEditor();
+    renderLoopControls();
     renderTimeline();
     statusText.textContent = `Added bar ${clampedBarIndex + 1}.`;
   },
@@ -328,12 +392,15 @@ const looper: FourBarMidiLooper = {
     this.stepDivisions = shiftStepMapAfterRemovedBar(this.stepDivisions, removeStartStep, removeEndStep);
     this.rolledSteps = shiftStepSetAfterRemovedBar(this.rolledSteps, removeStartStep, removeEndStep);
     this.selectedStep = getShiftedSelectedStep(this.selectedStep, removeStartStep, removeEndStep);
+    shiftLoopRangeAfterRemovedBar(barIndex);
     this.bars -= 1;
     totalSteps = this.bars * this.beatsPerBar;
-    Tone.Transport.loopEnd = `${this.bars}m`;
+    clampLoopRange();
+    applyTransportLoop();
     Tone.Transport.ticks = 0;
     clearPlayhead();
     renderBeatEditor();
+    renderLoopControls();
     renderTimeline();
     updateEventCount();
     statusText.textContent = `Removed bar ${barIndex + 1}.`;
@@ -354,6 +421,32 @@ const looper: FourBarMidiLooper = {
 
     renderProgress();
     statusText.textContent = `Cue set to bar ${barIndex + 1}.`;
+  },
+  setLoopRange(startBar: number, endBar: number) {
+    this.loopStartBar = startBar;
+    this.loopEndBar = endBar;
+    clampLoopRange();
+    applyTransportLoop();
+    renderLoopControls();
+    renderBarHeader();
+    statusText.textContent = `Loop range set to bars ${this.loopStartBar + 1}-${this.loopEndBar + 1}.`;
+  },
+  setLoopSelectionEnabled(enabled: boolean) {
+    this.loopSelectionEnabled = enabled;
+    applyTransportLoop();
+    renderLoopControls();
+    renderBarHeader();
+    statusText.textContent = enabled
+      ? `Looping bars ${this.loopStartBar + 1}-${this.loopEndBar + 1}.`
+      : "Looping the full roll.";
+  },
+  setSelectedKey(key: string) {
+    this.selectedKey = getValidKeyValue(key);
+    keySelect.value = this.selectedKey;
+    renderRoll();
+    statusText.textContent = this.selectedKey === "none"
+      ? "Key guide off."
+      : `${getKeyLabel(this.selectedKey)} guide on.`;
   },
   selectStep(step: number) {
     if (step < 0 || step >= totalSteps) {
@@ -518,6 +611,8 @@ Tone.Transport.loopStart = 0;
 Tone.Transport.loopEnd = "4m";
 bpmValue.textContent = "BPM";
 tempoInput.value = String(looper.bpm);
+renderKeySelect();
+renderLoopControls();
 
 Tone.Transport.scheduleRepeat((time) => {
   if (!looper.isPlaying) {
@@ -584,6 +679,11 @@ rollHeader.addEventListener("click", (event) => {
 barHeader.addEventListener("click", (event) => {
   const target = (event.target as HTMLElement).closest<HTMLElement>("[data-bar-index]");
 
+  if (suppressNextBarCue) {
+    suppressNextBarCue = false;
+    return;
+  }
+
   if (!target || looper.isPlaying) {
     return;
   }
@@ -644,9 +744,20 @@ rollGrid.addEventListener("pointerup", (event) => {
   lastLeftClickTime = performance.now();
 });
 
+barHeader.addEventListener("pointerdown", (event) => {
+  const target = (event.target as HTMLElement).closest<HTMLElement>("[data-bar-index]");
+
+  if (!target || event.button !== 0) {
+    return;
+  }
+
+  startBarSelection(Number(target.dataset.barIndex), event);
+});
+
 window.addEventListener("pointermove", (event) => {
   lastPointerClientX = event.clientX;
   lastPointerClientY = event.clientY;
+  updateBarSelectionFromElement(document.elementFromPoint(event.clientX, event.clientY));
   const target = getRollCell(document.elementFromPoint(event.clientX, event.clientY));
 
   if (!target || !dragMode || !dragNote || target.dataset.note !== dragNote) {
@@ -657,7 +768,9 @@ window.addEventListener("pointermove", (event) => {
 });
 
 window.addEventListener("pointerup", stopDrag);
+window.addEventListener("pointerup", stopBarSelection);
 window.addEventListener("pointercancel", stopDrag);
+window.addEventListener("pointercancel", stopBarSelection);
 
 playButton.addEventListener("click", () => {
   togglePlayback();
@@ -721,7 +834,54 @@ saveButton.addEventListener("click", () => {
 });
 
 loadButton.addEventListener("click", () => {
-  loadRoll();
+  rollFileInput.click();
+});
+
+reloadLastButton.addEventListener("click", () => {
+  reloadLastSavedRoll();
+});
+
+rollFileInput.addEventListener("change", () => {
+  void loadRollFromFile();
+});
+
+loopFromInput.addEventListener("change", () => {
+  looper.setLoopRange(Number(loopFromInput.value) - 1, looper.loopEndBar);
+});
+
+loopToInput.addEventListener("change", () => {
+  looper.setLoopRange(looper.loopStartBar, Number(loopToInput.value) - 1);
+});
+
+loopSelectionCheckbox.addEventListener("change", () => {
+  looper.setLoopSelectionEnabled(loopSelectionCheckbox.checked);
+});
+
+keySelect.addEventListener("change", () => {
+  looper.setSelectedKey(keySelect.value);
+});
+
+rollScroll.addEventListener("scroll", () => {
+  updateMinimapViewport();
+});
+
+rollMinimap.addEventListener("click", (event) => {
+  const rowTarget = (event.target as HTMLElement).closest<HTMLElement>("[data-minimap-note]");
+
+  if (rowTarget?.dataset.minimapNote) {
+    scrollRollToNote(rowTarget.dataset.minimapNote);
+    return;
+  }
+
+  const rect = rollMinimap.getBoundingClientRect();
+  const ratio = rect.height > 0 ? (event.clientY - rect.top) / rect.height : 0;
+  const maxScrollTop = rollScroll.scrollHeight - rollScroll.clientHeight;
+
+  rollScroll.scrollTop = Math.max(0, Math.min(maxScrollTop, ratio * maxScrollTop));
+});
+
+window.addEventListener("resize", () => {
+  updateMinimapViewport();
 });
 
 document.addEventListener("keydown", (event) => {
@@ -745,6 +905,7 @@ renderRoll();
 updateEventCount();
 updateRollColumns();
 scrollRollToOctave(4);
+updateMinimapViewport();
 
 function queryElement<T extends Element>(selector: string): T {
   const element = document.querySelector<T>(selector);
@@ -770,32 +931,95 @@ function togglePlayback(): void {
 }
 
 function saveRoll(): void {
-  const savedRoll: SavedRoll = {
+  const savedRoll = serializeRoll();
+  const didSaveLocal = saveRollToLocalStorage(savedRoll);
+
+  downloadRollFile(savedRoll);
+  statusText.textContent = didSaveLocal
+    ? `Saved ${looper.bars} ${looper.bars === 1 ? "bar" : "bars"} at ${looper.bpm} BPM.`
+    : "Downloaded roll JSON, but could not update the browser reload save.";
+}
+
+function serializeRoll(): SavedRoll {
+  return {
     version: 1,
     bars: looper.bars,
     beatsPerBar: looper.beatsPerBar,
     bpm: looper.bpm,
     events: looper.events.map((event) => ({ ...event })),
     stepDivisions: Array.from(looper.stepDivisions.entries()),
-    rolledSteps: Array.from(looper.rolledSteps)
+    rolledSteps: Array.from(looper.rolledSteps),
+    loopStartBar: looper.loopStartBar,
+    loopEndBar: looper.loopEndBar,
+    loopSelectionEnabled: looper.loopSelectionEnabled,
+    selectedKey: looper.selectedKey
   };
+}
 
+function saveRollToLocalStorage(savedRoll: SavedRoll): boolean {
   try {
     localStorage.setItem(savedRollStorageKey, JSON.stringify(savedRoll));
-    statusText.textContent = `Saved ${looper.bars} ${looper.bars === 1 ? "bar" : "bars"} at ${looper.bpm} BPM.`;
+    return true;
   } catch {
-    statusText.textContent = "Could not save this roll in the browser.";
+    return false;
   }
 }
 
-function loadRoll(): void {
-  const savedRoll = getSavedRoll();
+function downloadRollFile(savedRoll: SavedRoll): void {
+  const json = `${JSON.stringify(savedRoll, null, 2)}\n`;
+  const blob = new Blob([json], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
 
-  if (!savedRoll) {
-    statusText.textContent = "No saved roll found.";
+  link.href = url;
+  link.download = getRollFileName(savedRoll);
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function getRollFileName(savedRoll: SavedRoll): string {
+  const date = new Date().toISOString().slice(0, 10);
+
+  return `midi-roll-${savedRoll.bars}-bars-${savedRoll.bpm}-bpm-${date}.json`;
+}
+
+async function loadRollFromFile(): Promise<void> {
+  const file = rollFileInput.files?.[0];
+
+  if (!file) {
     return;
   }
 
+  try {
+    const parsedRoll = JSON.parse(await file.text()) as Partial<SavedRoll>;
+
+    if (!isSavedRoll(parsedRoll)) {
+      statusText.textContent = "That JSON file does not look like a saved roll.";
+      return;
+    }
+
+    applySavedRoll(parsedRoll);
+    statusText.textContent = `Loaded ${file.name}.`;
+  } catch {
+    statusText.textContent = "Could not read that roll file.";
+  } finally {
+    rollFileInput.value = "";
+  }
+}
+
+function reloadLastSavedRoll(): void {
+  const savedRoll = getSavedRollFromLocalStorage();
+
+  if (!savedRoll) {
+    statusText.textContent = "No browser reload save found.";
+    return;
+  }
+
+  applySavedRoll(savedRoll);
+  statusText.textContent = `Reloaded last save: ${looper.bars} ${looper.bars === 1 ? "bar" : "bars"} at ${looper.bpm} BPM.`;
+}
+
+function applySavedRoll(savedRoll: SavedRoll): void {
   if (looper.isPlaying) {
     looper.stop();
   }
@@ -806,21 +1030,27 @@ function loadRoll(): void {
   looper.events = savedRoll.events;
   looper.stepDivisions = new Map(savedRoll.stepDivisions);
   looper.rolledSteps = new Set(savedRoll.rolledSteps);
+  looper.loopStartBar = savedRoll.loopStartBar ?? 0;
+  looper.loopEndBar = savedRoll.loopEndBar ?? savedRoll.bars - 1;
+  looper.loopSelectionEnabled = savedRoll.loopSelectionEnabled ?? false;
+  looper.selectedKey = getValidKeyValue(savedRoll.selectedKey ?? "none");
   looper.selectedStep = null;
   totalSteps = looper.bars * looper.beatsPerBar;
-  Tone.Transport.loopEnd = `${looper.bars}m`;
+  clampLoopRange();
+  applyTransportLoop();
   Tone.Transport.ticks = 0;
   Tone.Transport.bpm.value = looper.bpm;
   tempoInput.value = String(looper.bpm);
+  keySelect.value = looper.selectedKey;
   clearPlayhead();
   renderBeatEditor();
+  renderLoopControls();
   renderTimeline();
   updateEventCount();
   scrollRollToOctave(4);
-  statusText.textContent = `Loaded ${looper.bars} ${looper.bars === 1 ? "bar" : "bars"} at ${looper.bpm} BPM.`;
 }
 
-function getSavedRoll(): SavedRoll | null {
+function getSavedRollFromLocalStorage(): SavedRoll | null {
   const savedRollText = localStorage.getItem(savedRollStorageKey);
 
   if (!savedRollText) {
@@ -853,7 +1083,11 @@ function isSavedRoll(value: Partial<SavedRoll>): value is SavedRoll {
     && Array.isArray(value.stepDivisions)
     && value.stepDivisions.every(isSavedDivisionEntry)
     && Array.isArray(value.rolledSteps)
-    && value.rolledSteps.every((step) => Number.isInteger(step));
+    && value.rolledSteps.every((step) => Number.isInteger(step))
+    && isOptionalSavedBar(value.loopStartBar)
+    && isOptionalSavedBar(value.loopEndBar)
+    && (value.loopSelectionEnabled === undefined || typeof value.loopSelectionEnabled === "boolean")
+    && (value.selectedKey === undefined || isValidKeyValue(value.selectedKey));
 }
 
 function isSavedNote(event: LoopedNote): event is LoopedNote {
@@ -871,6 +1105,18 @@ function isSavedDivisionEntry(entry: [number, BeatDivision]): entry is [number, 
     && entry.length === 2
     && Number.isInteger(entry[0])
     && beatDivisionOptions.some((option) => option.value === entry[1]);
+}
+
+function isOptionalSavedBar(value: number | undefined): boolean {
+  return value === undefined || (Number.isInteger(value) && value >= 0);
+}
+
+function isValidKeyValue(value: string): boolean {
+  return keyOptions.some((option) => option.value === value);
+}
+
+function getValidKeyValue(value: string): string {
+  return isValidKeyValue(value) ? value : "none";
 }
 
 function getRollCell(target: EventTarget | null): HTMLButtonElement | null {
@@ -896,6 +1142,43 @@ function startDrag(mode: DragMode, target: HTMLButtonElement, event: PointerEven
   startAutoScroll();
 }
 
+function startBarSelection(barIndex: number, event: PointerEvent): void {
+  event.preventDefault();
+  barSelectionAnchor = barIndex;
+  barSelectionMoved = false;
+  lastPointerClientX = event.clientX;
+  lastPointerClientY = event.clientY;
+  looper.setLoopRange(barIndex, barIndex);
+  startAutoScroll();
+}
+
+function updateBarSelectionFromElement(element: Element | null): void {
+  if (barSelectionAnchor === null) {
+    return;
+  }
+
+  const target = element?.closest<HTMLElement>("[data-bar-index]");
+
+  if (!target) {
+    return;
+  }
+
+  const barIndex = Number(target.dataset.barIndex);
+  barSelectionMoved ||= barIndex !== barSelectionAnchor;
+  looper.setLoopRange(barSelectionAnchor, barIndex);
+}
+
+function stopBarSelection(): void {
+  if (barSelectionAnchor === null) {
+    return;
+  }
+
+  suppressNextBarCue = barSelectionMoved;
+  barSelectionAnchor = null;
+  barSelectionMoved = false;
+  stopAutoScroll();
+}
+
 function stopDrag(): void {
   dragMode = null;
   dragNote = null;
@@ -909,7 +1192,7 @@ function startAutoScroll(): void {
   }
 
   const tick = () => {
-    if (!dragMode) {
+    if (!dragMode && barSelectionAnchor === null) {
       autoScrollAnimationId = 0;
       return;
     }
@@ -932,6 +1215,8 @@ function startAutoScroll(): void {
       if (target && target.dataset.note === dragNote) {
         applyDragToCell(target);
       }
+
+      updateBarSelectionFromElement(document.elementFromPoint(lastPointerClientX, lastPointerClientY));
     }
 
     autoScrollAnimationId = requestAnimationFrame(tick);
@@ -987,6 +1272,8 @@ function updateRollRow(note: string): void {
     cell.classList.toggle("is-note-hold", isActive && !isStart);
     cell.setAttribute("aria-pressed", String(isActive));
   });
+
+  renderMinimap();
 }
 
 function getCurrentStep(): number {
@@ -1043,6 +1330,119 @@ function getGridSlots(): GridSlot[] {
 
 function getDurationAtTick(tick: number): number {
   return getGridSlots().find((slot) => slot.tick === tick)?.durationTicks ?? beatTicks;
+}
+
+function getBarLengthTicks(): number {
+  return looper.beatsPerBar * beatTicks;
+}
+
+function getLoopStartTick(): number {
+  return looper.loopStartBar * getBarLengthTicks();
+}
+
+function getLoopEndTick(): number {
+  return (looper.loopEndBar + 1) * getBarLengthTicks();
+}
+
+function isTickInsideLoopRange(tick: number): boolean {
+  return tick >= getLoopStartTick() && tick < getLoopEndTick();
+}
+
+function clampLoopRange(): void {
+  const lastBar = Math.max(0, looper.bars - 1);
+  const startBar = Math.min(lastBar, Math.max(0, looper.loopStartBar));
+  const endBar = Math.min(lastBar, Math.max(0, looper.loopEndBar));
+
+  looper.loopStartBar = Math.min(startBar, endBar);
+  looper.loopEndBar = Math.max(startBar, endBar);
+}
+
+function applyTransportLoop(): void {
+  clampLoopRange();
+  Tone.Transport.loop = true;
+  Tone.Transport.loopStart = looper.loopSelectionEnabled ? `${looper.loopStartBar}m` : 0;
+  Tone.Transport.loopEnd = looper.loopSelectionEnabled ? `${looper.loopEndBar + 1}m` : `${looper.bars}m`;
+}
+
+function renderLoopControls(): void {
+  clampLoopRange();
+  loopFromInput.min = "1";
+  loopFromInput.max = String(looper.bars);
+  loopFromInput.value = String(looper.loopStartBar + 1);
+  loopToInput.min = "1";
+  loopToInput.max = String(looper.bars);
+  loopToInput.value = String(looper.loopEndBar + 1);
+  loopSelectionCheckbox.checked = looper.loopSelectionEnabled;
+}
+
+function renderKeySelect(): void {
+  keySelect.innerHTML = keyOptions
+    .map((option) => `<option value="${option.value}">${option.label}</option>`)
+    .join("");
+  keySelect.value = looper.selectedKey;
+}
+
+function getSelectedKeyOption(): (typeof keyOptions)[number] | undefined {
+  return keyOptions.find((option) => option.value === looper.selectedKey);
+}
+
+function getKeyLabel(value: string): string {
+  return keyOptions.find((option) => option.value === value)?.label ?? "Off";
+}
+
+function getSelectedKeyPitchClasses(): Set<number> | null {
+  const selectedKey = getSelectedKeyOption();
+
+  if (!selectedKey || selectedKey.root === null) {
+    return null;
+  }
+
+  return new Set(selectedKey.intervals.map((interval) => (selectedKey.root + interval) % 12));
+}
+
+function isNoteInSelectedKey(note: string): boolean {
+  const keyPitchClasses = getSelectedKeyPitchClasses();
+
+  return Boolean(keyPitchClasses?.has(getPitchClass(note)));
+}
+
+function isNoteKeyRoot(note: string): boolean {
+  const selectedKey = getSelectedKeyOption();
+
+  return selectedKey?.root === getPitchClass(note);
+}
+
+function getScaleDegree(note: string): string {
+  const selectedKey = getSelectedKeyOption();
+
+  if (!selectedKey || selectedKey.root === null) {
+    return "";
+  }
+
+  const pitchClass = getPitchClass(note);
+  const degreeIndex = selectedKey.intervals.findIndex((interval) => {
+    return (selectedKey.root + interval) % 12 === pitchClass;
+  });
+
+  return degreeIndex >= 0 ? String(degreeIndex + 1) : "";
+}
+
+function shiftLoopRangeAfterInsertedBar(insertBar: number): void {
+  if (insertBar <= looper.loopStartBar) {
+    looper.loopStartBar += 1;
+    looper.loopEndBar += 1;
+  } else if (insertBar <= looper.loopEndBar + 1) {
+    looper.loopEndBar += 1;
+  }
+}
+
+function shiftLoopRangeAfterRemovedBar(removeBar: number): void {
+  if (removeBar < looper.loopStartBar) {
+    looper.loopStartBar -= 1;
+    looper.loopEndBar -= 1;
+  } else if (removeBar <= looper.loopEndBar) {
+    looper.loopEndBar -= 1;
+  }
 }
 
 function shiftEventAroundInsertedBar(event: LoopedNote, insertTick: number, barTicks: number): LoopedNote {
@@ -1350,6 +1750,9 @@ function renderBarHeader(): void {
       const span = getGridSlots().filter((slot) => Math.floor(slot.step / looper.beatsPerBar) === index).length;
       const columnStyle = `grid-column: ${gridColumn} / span ${span}`;
       const disabledAttribute = looper.bars <= 1 ? "disabled" : "";
+      const isLoopSelected = index >= looper.loopStartBar && index <= looper.loopEndBar;
+      const isLoopStart = index === looper.loopStartBar;
+      const isLoopEnd = index === looper.loopEndBar;
       const leadingControl = index === 0
         ? `<button class="bar-insert-button" type="button" data-insert-bar-index="0" aria-label="Insert bar before bar 1">+</button>`
         : `<span class="bar-leading-spacer" aria-hidden="true"></span>`;
@@ -1357,9 +1760,9 @@ function renderBarHeader(): void {
       gridColumn += span;
 
       return `
-        <div class="bar-heading" style="${columnStyle}">
+        <div class="bar-heading ${isLoopSelected ? "is-loop-selected" : ""} ${isLoopStart ? "is-loop-start" : ""} ${isLoopEnd ? "is-loop-end" : ""}" style="${columnStyle}">
           ${leadingControl}
-          <button class="bar-cue-button" type="button" data-bar-index="${index}">Bar ${index + 1}</button>
+          <button class="bar-cue-button" type="button" data-bar-index="${index}" aria-pressed="${isLoopSelected}">Bar ${index + 1}</button>
           <button class="bar-remove-button" type="button" data-remove-bar-index="${index}" aria-label="Remove bar ${index + 1}" ${disabledAttribute}>-</button>
           <button class="bar-insert-button" type="button" data-insert-bar-index="${index + 1}" aria-label="Insert bar after bar ${index + 1}">+</button>
         </div>
@@ -1373,6 +1776,9 @@ function renderRoll(): void {
 
   rollGrid.innerHTML = pianoRollNotes
     .map((note) => {
+      const isInKey = isNoteInSelectedKey(note);
+      const isKeyRoot = isNoteKeyRoot(note);
+      const scaleDegree = getScaleDegree(note);
       const rowCells = slots.map((slot) => {
         const activeEvent = looper.events.find((event) => {
           return event.note === note && slot.tick >= event.tick && slot.tick < event.tick + event.durationTicks;
@@ -1397,15 +1803,45 @@ function renderRoll(): void {
 
       return `
         <div
-          class="roll-note ${isBlackKey(note) ? "is-black-key" : ""} ${isOctaveStart(note) ? "is-octave-start" : ""}"
+          class="roll-note ${isBlackKey(note) ? "is-black-key" : ""} ${isOctaveStart(note) ? "is-octave-start" : ""} ${isInKey ? "is-in-key" : ""} ${isKeyRoot ? "is-key-root" : ""}"
           data-note="${note}"
         >
-          ${note}
+          <span class="key-guide-marker" aria-hidden="true">
+            <span class="key-dot"></span>
+            <span class="key-degree">${scaleDegree}</span>
+          </span>
+          <span>${note}</span>
         </div>
         ${rowCells}
       `;
     })
     .join("");
+
+  renderMinimap();
+}
+
+function renderMinimap(): void {
+  const notesWithEvents = new Set(looper.events.map((event) => event.note));
+
+  rollMinimap.innerHTML = `
+    <div class="minimap-lane" style="grid-template-rows: repeat(${pianoRollNotes.length}, minmax(0, 1fr));">
+      ${pianoRollNotes
+        .map((note) => {
+          return `
+            <button
+              class="minimap-row ${notesWithEvents.has(note) ? "has-notes" : ""}"
+              type="button"
+              aria-label="Jump to ${note}"
+              data-minimap-note="${note}"
+            ></button>
+          `;
+        })
+        .join("")}
+      <div class="minimap-viewport" aria-hidden="true"></div>
+    </div>
+  `;
+
+  updateMinimapViewport();
 }
 
 function updateRollColumns(): void {
@@ -1432,7 +1868,11 @@ function renderTimeline(): void {
 }
 
 function scrollRollToOctave(octave: number): void {
-  const targetNote = rollGrid.querySelector<HTMLElement>(`.roll-note[data-note="C${octave}"]`);
+  scrollRollToNote(`C${octave}`);
+}
+
+function scrollRollToNote(note: string): void {
+  const targetNote = rollGrid.querySelector<HTMLElement>(`.roll-note[data-note="${CSS.escape(note)}"]`);
 
   if (!targetNote) {
     return;
@@ -1442,6 +1882,27 @@ function scrollRollToOctave(octave: number): void {
     top: Math.max(0, targetNote.offsetTop - 120),
     left: 0
   });
+
+  updateMinimapViewport();
+}
+
+function updateMinimapViewport(): void {
+  const viewport = rollMinimap.querySelector<HTMLElement>(".minimap-viewport");
+
+  if (!viewport) {
+    return;
+  }
+
+  const scrollHeight = rollScroll.scrollHeight;
+  const clientHeight = rollScroll.clientHeight;
+  const viewportHeight = scrollHeight > 0 ? Math.min(100, Math.max(6, (clientHeight / scrollHeight) * 100)) : 100;
+  const maxTop = 100 - viewportHeight;
+  const viewportTop = scrollHeight > clientHeight
+    ? Math.min(maxTop, Math.max(0, (rollScroll.scrollTop / scrollHeight) * 100))
+    : 0;
+
+  viewport.style.top = `${viewportTop}%`;
+  viewport.style.height = `${viewportHeight}%`;
 }
 
 function updateEventCount(): void {
