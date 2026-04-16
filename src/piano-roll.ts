@@ -2,14 +2,25 @@ import * as Tone from "tone";
 import "./style.css";
 
 type NoteName = "C" | "C#" | "D" | "D#" | "E" | "F" | "F#" | "G" | "G#" | "A" | "A#" | "B";
+type SoundfontMap = Record<string, string>;
+
+declare global {
+  interface Window {
+    MIDI?: {
+      Soundfont?: Record<string, SoundfontMap>;
+    };
+  }
+}
 
 type LoopedNote = {
   note: string;
+  instrument: InstrumentId;
   velocity: number;
   tick: number;
   durationTicks: number;
 };
 
+type InstrumentId = "piano" | "flute" | "violin" | "cello";
 type DragMode = "add" | "remove";
 type BeatDivision = "1/4" | "1/8" | "1/16" | "triplet";
 
@@ -33,6 +44,27 @@ type ChordTemplate = {
   intervals: number[];
 };
 
+type InstrumentOption = {
+  id: InstrumentId;
+  label: string;
+  color: string;
+  release: number;
+  volumeDb: number;
+  soundfontName?: string;
+  sampleNotes?: string[];
+};
+
+type InstrumentSettings = {
+  dynamics: number;
+  vibrato: number;
+};
+
+type InstrumentVoice = {
+  sampler: Tone.Sampler;
+  vibrato: Tone.Vibrato;
+  volume: Tone.Volume;
+};
+
 type SavedRoll = {
   version: 1;
   bars: number;
@@ -45,6 +77,8 @@ type SavedRoll = {
   loopEndBar?: number;
   loopSelectionEnabled?: boolean;
   selectedKey?: string;
+  selectedInstrument?: InstrumentId;
+  instrumentSettings?: Array<[InstrumentId, InstrumentSettings]>;
 };
 
 interface FourBarMidiLooper {
@@ -56,6 +90,7 @@ interface FourBarMidiLooper {
   loopEndBar: number;
   loopSelectionEnabled: boolean;
   selectedKey: string;
+  selectedInstrument: InstrumentId;
   rolledSteps: Set<number>;
   selectedStep: number | null;
   stepDivisions: Map<number, BeatDivision>;
@@ -70,6 +105,7 @@ interface FourBarMidiLooper {
   setLoopRange(startBar: number, endBar: number): void;
   setLoopSelectionEnabled(enabled: boolean): void;
   setSelectedKey(key: string): void;
+  setSelectedInstrument(instrument: InstrumentId): void;
   selectStep(step: number): void;
   setSelectedBeatDivision(division: BeatDivision): void;
   setBpm(bpm: number): void;
@@ -126,6 +162,29 @@ app.innerHTML = `
           <label>
             <span class="meta-label">Key Guide</span>
             <select id="keySelect"></select>
+          </label>
+        </section>
+        <section class="instrument-editor" aria-label="Instrument controls">
+          <label>
+            <span class="meta-label">Instrument</span>
+            <span class="instrument-select-shell">
+              <span class="instrument-swatch" id="instrumentSwatch" aria-hidden="true"></span>
+              <select id="instrumentSelect"></select>
+            </span>
+          </label>
+          <label class="instrument-slider">
+            <span>
+              <span class="meta-label">Dynamics</span>
+              <strong id="dynamicsValue">100%</strong>
+            </span>
+            <input id="dynamicsInput" type="range" min="0" max="120" step="1" value="100" />
+          </label>
+          <label class="instrument-slider">
+            <span>
+              <span class="meta-label">Vibrato</span>
+              <strong id="vibratoValue">0%</strong>
+            </span>
+            <input id="vibratoInput" type="range" min="0" max="100" step="1" value="0" />
           </label>
         </section>
         <div class="button-row">
@@ -196,6 +255,12 @@ const loopFromInput = queryElement<HTMLInputElement>("#loopFromInput");
 const loopToInput = queryElement<HTMLInputElement>("#loopToInput");
 const loopSelectionCheckbox = queryElement<HTMLInputElement>("#loopSelectionCheckbox");
 const keySelect = queryElement<HTMLSelectElement>("#keySelect");
+const instrumentSelect = queryElement<HTMLSelectElement>("#instrumentSelect");
+const instrumentSwatch = queryElement<HTMLElement>("#instrumentSwatch");
+const dynamicsInput = queryElement<HTMLInputElement>("#dynamicsInput");
+const dynamicsValue = queryElement<HTMLElement>("#dynamicsValue");
+const vibratoInput = queryElement<HTMLInputElement>("#vibratoInput");
+const vibratoValue = queryElement<HTMLElement>("#vibratoValue");
 
 const piano = new Tone.Sampler({
   urls: {
@@ -217,7 +282,7 @@ const piano = new Tone.Sampler({
   onload: () => {
     statusText.textContent = "Piano loaded. Click to preview, double-click to place a note.";
   }
-}).toDestination();
+});
 
 const beatTicks = Tone.Transport.PPQ;
 const barLengthTicks = Tone.Transport.PPQ * 4;
@@ -235,6 +300,44 @@ const keyOptions = [
     { value: `${index}:minor`, label: `${root} minor`, root: index, intervals: [0, 2, 3, 5, 7, 8, 10] }
   ])
 ];
+const soundfontBaseUrl = "https://gleitz.github.io/midi-js-soundfonts/FluidR3_GM/";
+const instrumentOptions: InstrumentOption[] = [
+  { id: "piano", label: "Piano", color: "#7fd9b3", release: 1.2, volumeDb: 0 },
+  {
+    id: "flute",
+    label: "Flute",
+    color: "#8fb8ff",
+    soundfontName: "flute",
+    sampleNotes: ["C4", "E4", "G4", "B4", "D5", "F5", "A5", "C6"],
+    release: 0.8,
+    volumeDb: -5
+  },
+  {
+    id: "violin",
+    label: "Violin",
+    color: "#f0c95d",
+    soundfontName: "violin",
+    sampleNotes: ["G3", "C4", "E4", "G4", "B4", "D5", "F5", "A5"],
+    release: 0.9,
+    volumeDb: -6
+  },
+  {
+    id: "cello",
+    label: "Cello",
+    color: "#d68ac8",
+    soundfontName: "cello",
+    sampleNotes: ["C2", "E2", "G2", "B2", "D3", "F3", "A3", "C4"],
+    release: 1.1,
+    volumeDb: -6
+  }
+];
+const instrumentSettings = new Map<InstrumentId, InstrumentSettings>(
+  instrumentOptions.map((option) => [option.id, { dynamics: 100, vibrato: 0 }])
+);
+const instrumentVoices: Partial<Record<InstrumentId, InstrumentVoice>> = {
+  piano: createInstrumentVoice("piano", piano)
+};
+const loadingInstrumentSamples = new Map<InstrumentId, Promise<void>>();
 const chordTemplates: ChordTemplate[] = [
   { suffix: "13sus4", intervals: [0, 2, 5, 7, 9, 10] },
   { suffix: "maj13", intervals: [0, 2, 4, 7, 9, 11] },
@@ -304,18 +407,21 @@ const looper: FourBarMidiLooper = {
   loopStartBar: 0,
   loopEndBar: 3,
   loopSelectionEnabled: false,
-  selectedKey: "none",
+  selectedKey: "0:major",
+  selectedInstrument: "piano",
   rolledSteps: new Set<number>(),
   selectedStep: null,
   stepDivisions: new Map<number, BeatDivision>(),
   events: ["C3", "E3", "G3"].map((note) => ({
     note,
+    instrument: "piano",
     velocity: 0.88,
     tick: 0,
     durationTicks: barLengthTicks
   })),
   async start() {
     await Tone.start();
+    await loadNeededInstrumentSamples();
     await Tone.loaded();
     applyTransportLoop();
     if (this.loopSelectionEnabled && !isTickInsideLoopRange(Tone.Transport.ticks)) {
@@ -448,6 +554,19 @@ const looper: FourBarMidiLooper = {
       ? "Key guide off."
       : `${getKeyLabel(this.selectedKey)} guide on.`;
   },
+  setSelectedInstrument(instrument: InstrumentId) {
+    this.selectedInstrument = getValidInstrumentId(instrument);
+    instrumentSelect.value = this.selectedInstrument;
+    renderInstrumentControls();
+    const selectedInstrument = this.selectedInstrument;
+    statusText.textContent = `Loading ${getInstrumentLabel(selectedInstrument)} samples.`;
+    void ensureInstrumentSamples(selectedInstrument).then(() => {
+      if (this.selectedInstrument === selectedInstrument) {
+        statusText.textContent = `${getInstrumentLabel(this.selectedInstrument)} selected.`;
+      }
+    });
+    renderRoll();
+  },
   selectStep(step: number) {
     if (step < 0 || step >= totalSteps) {
       return;
@@ -477,19 +596,20 @@ const looper: FourBarMidiLooper = {
     statusText.textContent = `Tempo set to ${clampedBpm} BPM.`;
   },
   previewNote(note: string) {
-    playNote(note, 0.88, "8n");
-    statusText.textContent = `Previewing ${note}.`;
+    playNote(this.selectedInstrument, note, 0.88, "8n");
+    statusText.textContent = `Previewing ${note} on ${getInstrumentLabel(this.selectedInstrument)}.`;
   },
   addNoteAtTick(note: string, tick: number, durationTicks: number, render = true) {
-    const alreadyPlaced = this.events.some((event) => event.note === note && tick >= event.tick && tick < event.tick + event.durationTicks);
+    const instrument = this.selectedInstrument;
+    const alreadyPlaced = this.events.some((event) => getEventInstrument(event) === instrument && event.note === note && tick >= event.tick && tick < event.tick + event.durationTicks);
 
     if (alreadyPlaced) {
-      statusText.textContent = `${note} is already on ${formatTick(tick)}.`;
+      statusText.textContent = `${getInstrumentLabel(instrument)} already has ${note} on ${formatTick(tick)}.`;
       return;
     }
 
-    const previousEvent = this.events.find((event) => event.note === note && event.tick + event.durationTicks === tick);
-    const nextEvent = this.events.find((event) => event.note === note && event.tick === tick + durationTicks);
+    const previousEvent = this.events.find((event) => getEventInstrument(event) === instrument && event.note === note && event.tick + event.durationTicks === tick);
+    const nextEvent = this.events.find((event) => getEventInstrument(event) === instrument && event.note === note && event.tick === tick + durationTicks);
 
     if (previousEvent && nextEvent) {
       previousEvent.durationTicks += durationTicks + nextEvent.durationTicks;
@@ -502,13 +622,14 @@ const looper: FourBarMidiLooper = {
     } else {
       this.events.push({
         note,
+        instrument,
         velocity: 0.88,
         tick,
         durationTicks
       });
     }
 
-    statusText.textContent = `${note} placed on ${formatTick(tick)}.`;
+    statusText.textContent = `${getInstrumentLabel(instrument)} ${note} placed on ${formatTick(tick)}.`;
     updateEventCount();
     renderChordHeader();
     if (render) {
@@ -519,11 +640,12 @@ const looper: FourBarMidiLooper = {
   },
   hasHeldNoteAtTick(note: string, tick: number) {
     return this.events.some((event) => {
-      return event.note === note && tick > event.tick && tick < event.tick + event.durationTicks;
+      return getEventInstrument(event) === this.selectedInstrument && event.note === note && tick > event.tick && tick < event.tick + event.durationTicks;
     });
   },
   splitNoteAtTick(note: string, tick: number, durationTicks: number) {
-    const event = this.events.find((item) => item.note === note && tick > item.tick && tick < item.tick + item.durationTicks);
+    const instrument = this.selectedInstrument;
+    const event = this.events.find((item) => getEventInstrument(item) === instrument && item.note === note && tick > item.tick && tick < item.tick + item.durationTicks);
 
     if (!event) {
       this.addNoteAtTick(note, tick, durationTicks);
@@ -534,20 +656,22 @@ const looper: FourBarMidiLooper = {
     event.durationTicks = tick - event.tick;
     this.events.push({
       note,
+      instrument,
       velocity: event.velocity,
       tick,
       durationTicks: originalEndTick - tick
     });
-    statusText.textContent = `${note} retriggers on ${formatTick(tick)}.`;
+    statusText.textContent = `${getInstrumentLabel(instrument)} ${note} retriggers on ${formatTick(tick)}.`;
     updateEventCount();
     renderChordHeader();
     renderRoll();
   },
   removeNoteAtTick(note: string, tick: number, durationTicks: number, render = true) {
-    const existingIndex = this.events.findIndex((event) => event.note === note && tick >= event.tick && tick < event.tick + event.durationTicks);
+    const instrument = this.selectedInstrument;
+    const existingIndex = this.events.findIndex((event) => getEventInstrument(event) === instrument && event.note === note && tick >= event.tick && tick < event.tick + event.durationTicks);
 
     if (existingIndex < 0) {
-      statusText.textContent = `${note} is not on ${formatTick(tick)}.`;
+      statusText.textContent = `${getInstrumentLabel(instrument)} does not have ${note} on ${formatTick(tick)}.`;
       return;
     }
 
@@ -567,13 +691,14 @@ const looper: FourBarMidiLooper = {
       event.durationTicks = tick - event.tick;
       this.events.push({
         note,
+        instrument,
         velocity: event.velocity,
         tick: tick + durationTicks,
         durationTicks: rightDurationTicks
       });
     }
 
-    statusText.textContent = `${note} removed from ${formatTick(tick)}.`;
+    statusText.textContent = `${getInstrumentLabel(instrument)} ${note} removed from ${formatTick(tick)}.`;
     updateEventCount();
     renderChordHeader();
     if (render) {
@@ -612,6 +737,7 @@ Tone.Transport.loopEnd = "4m";
 bpmValue.textContent = "BPM";
 tempoInput.value = String(looper.bpm);
 renderKeySelect();
+renderInstrumentSelect();
 renderLoopControls();
 
 Tone.Transport.scheduleRepeat((time) => {
@@ -627,7 +753,7 @@ Tone.Transport.scheduleRepeat((time) => {
 
   dueEvents.forEach((event, index) => {
     const rollOffset = looper.rolledSteps.has(step) ? index * 0.035 : 0;
-    piano.triggerAttackRelease(event.note, ticksToSeconds(event.durationTicks), time + rollOffset, event.velocity);
+    triggerInstrument(getEventInstrument(event), event.note, ticksToSeconds(event.durationTicks), time + rollOffset, event.velocity);
   });
 }, `${transportPulseTicks}i`);
 
@@ -861,6 +987,18 @@ keySelect.addEventListener("change", () => {
   looper.setSelectedKey(keySelect.value);
 });
 
+instrumentSelect.addEventListener("change", () => {
+  looper.setSelectedInstrument(getValidInstrumentId(instrumentSelect.value));
+});
+
+dynamicsInput.addEventListener("input", () => {
+  setInstrumentDynamics(looper.selectedInstrument, Number(dynamicsInput.value));
+});
+
+vibratoInput.addEventListener("input", () => {
+  setInstrumentVibrato(looper.selectedInstrument, Number(vibratoInput.value));
+});
+
 rollScroll.addEventListener("scroll", () => {
   updateMinimapViewport();
 });
@@ -952,7 +1090,12 @@ function serializeRoll(): SavedRoll {
     loopStartBar: looper.loopStartBar,
     loopEndBar: looper.loopEndBar,
     loopSelectionEnabled: looper.loopSelectionEnabled,
-    selectedKey: looper.selectedKey
+    selectedKey: looper.selectedKey,
+    selectedInstrument: looper.selectedInstrument,
+    instrumentSettings: Array.from(instrumentSettings.entries()).map(([instrument, settings]) => [
+      instrument,
+      { ...settings }
+    ])
   };
 }
 
@@ -1034,7 +1177,10 @@ function applySavedRoll(savedRoll: SavedRoll): void {
   looper.loopEndBar = savedRoll.loopEndBar ?? savedRoll.bars - 1;
   looper.loopSelectionEnabled = savedRoll.loopSelectionEnabled ?? false;
   looper.selectedKey = getValidKeyValue(savedRoll.selectedKey ?? "none");
+  looper.selectedInstrument = getValidInstrumentId(savedRoll.selectedInstrument ?? "piano");
+  applySavedInstrumentSettings(savedRoll.instrumentSettings);
   looper.selectedStep = null;
+  looper.events = looper.events.map(normalizeSavedEvent);
   totalSteps = looper.bars * looper.beatsPerBar;
   clampLoopRange();
   applyTransportLoop();
@@ -1042,6 +1188,8 @@ function applySavedRoll(savedRoll: SavedRoll): void {
   Tone.Transport.bpm.value = looper.bpm;
   tempoInput.value = String(looper.bpm);
   keySelect.value = looper.selectedKey;
+  instrumentSelect.value = looper.selectedInstrument;
+  renderInstrumentControls();
   clearPlayhead();
   renderBeatEditor();
   renderLoopControls();
@@ -1087,17 +1235,61 @@ function isSavedRoll(value: Partial<SavedRoll>): value is SavedRoll {
     && isOptionalSavedBar(value.loopStartBar)
     && isOptionalSavedBar(value.loopEndBar)
     && (value.loopSelectionEnabled === undefined || typeof value.loopSelectionEnabled === "boolean")
-    && (value.selectedKey === undefined || isValidKeyValue(value.selectedKey));
+    && (value.selectedKey === undefined || isValidKeyValue(value.selectedKey))
+    && (value.selectedInstrument === undefined || isValidInstrumentId(value.selectedInstrument))
+    && (value.instrumentSettings === undefined || isSavedInstrumentSettings(value.instrumentSettings));
 }
 
-function isSavedNote(event: LoopedNote): event is LoopedNote {
+function isSavedNote(event: Partial<LoopedNote>): event is LoopedNote {
   return typeof event.note === "string"
     && pianoRollNotes.includes(event.note)
+    && (event.instrument === undefined || isValidInstrumentId(event.instrument))
     && Number.isFinite(event.velocity)
     && Number.isFinite(event.tick)
     && Number.isFinite(event.durationTicks)
+    && typeof event.tick === "number"
+    && typeof event.durationTicks === "number"
     && event.tick >= 0
     && event.durationTicks > 0;
+}
+
+function normalizeSavedEvent(event: LoopedNote): LoopedNote {
+  return {
+    ...event,
+    instrument: getEventInstrument(event)
+  };
+}
+
+function isSavedInstrumentSettings(value: Array<[InstrumentId, InstrumentSettings]>): boolean {
+  return Array.isArray(value)
+    && value.every((entry) => {
+      return Array.isArray(entry)
+        && entry.length === 2
+        && isValidInstrumentId(entry[0])
+        && isValidInstrumentSettings(entry[1]);
+    });
+}
+
+function isValidInstrumentSettings(value: Partial<InstrumentSettings>): value is InstrumentSettings {
+  return Number.isFinite(value.dynamics)
+    && Number.isFinite(value.vibrato)
+    && typeof value.dynamics === "number"
+    && typeof value.vibrato === "number";
+}
+
+function applySavedInstrumentSettings(savedSettings: Array<[InstrumentId, InstrumentSettings]> | undefined): void {
+  instrumentOptions.forEach((option) => {
+    instrumentSettings.set(option.id, { dynamics: 100, vibrato: 0 });
+  });
+
+  savedSettings?.forEach(([instrument, settings]) => {
+    instrumentSettings.set(instrument, {
+      dynamics: clampPercent(settings.dynamics, 0, 120),
+      vibrato: clampPercent(settings.vibrato, 0, 100)
+    });
+  });
+
+  instrumentOptions.forEach((option) => applyInstrumentSettings(option.id));
 }
 
 function isSavedDivisionEntry(entry: [number, BeatDivision]): entry is [number, BeatDivision] {
@@ -1117,6 +1309,65 @@ function isValidKeyValue(value: string): boolean {
 
 function getValidKeyValue(value: string): string {
   return isValidKeyValue(value) ? value : "none";
+}
+
+function isValidInstrumentId(value: unknown): value is InstrumentId {
+  return instrumentOptions.some((option) => option.id === value);
+}
+
+function getValidInstrumentId(value: unknown): InstrumentId {
+  return isValidInstrumentId(value) ? value : "piano";
+}
+
+function getEventInstrument(event: Pick<LoopedNote, "instrument">): InstrumentId {
+  return getValidInstrumentId(event.instrument);
+}
+
+function getInstrumentLabel(instrument: InstrumentId): string {
+  return instrumentOptions.find((option) => option.id === instrument)?.label ?? "Piano";
+}
+
+function getInstrumentColor(instrument: InstrumentId): string {
+  return instrumentOptions.find((option) => option.id === instrument)?.color ?? instrumentOptions[0].color;
+}
+
+function getInstrumentOption(instrument: InstrumentId): InstrumentOption {
+  return instrumentOptions.find((option) => option.id === instrument) ?? instrumentOptions[0];
+}
+
+function getInstrumentSettings(instrument: InstrumentId): InstrumentSettings {
+  const settings = instrumentSettings.get(instrument);
+
+  if (settings) {
+    return settings;
+  }
+
+  const defaultSettings = { dynamics: 100, vibrato: 0 };
+  instrumentSettings.set(instrument, defaultSettings);
+
+  return defaultSettings;
+}
+
+function setInstrumentDynamics(instrument: InstrumentId, value: number): void {
+  const settings = getInstrumentSettings(instrument);
+
+  settings.dynamics = clampPercent(value, 0, 120);
+  applyInstrumentSettings(instrument);
+  renderInstrumentControls();
+  statusText.textContent = `${getInstrumentLabel(instrument)} dynamics ${settings.dynamics}%.`;
+}
+
+function setInstrumentVibrato(instrument: InstrumentId, value: number): void {
+  const settings = getInstrumentSettings(instrument);
+
+  settings.vibrato = clampPercent(value, 0, 100);
+  applyInstrumentSettings(instrument);
+  renderInstrumentControls();
+  statusText.textContent = `${getInstrumentLabel(instrument)} vibrato ${settings.vibrato}%.`;
+}
+
+function clampPercent(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, Math.round(Number.isFinite(value) ? value : min)));
 }
 
 function getRollCell(target: EventTarget | null): HTMLButtonElement | null {
@@ -1261,16 +1512,20 @@ function applyDragToCell(target: HTMLButtonElement): void {
 function updateRollRow(note: string): void {
   rollGrid.querySelectorAll<HTMLButtonElement>(`.roll-cell[data-note="${CSS.escape(note)}"]`).forEach((cell) => {
     const tick = Number(cell.dataset.tick);
-    const activeEvent = looper.events.find((event) => {
-      return event.note === note && tick >= event.tick && tick < event.tick + event.durationTicks;
-    });
-    const isActive = Boolean(activeEvent);
-    const isStart = activeEvent?.tick === tick;
+    const activeEvents = getActiveEventsAtTick(note, tick);
+    const selectedEvent = activeEvents.find((event) => getEventInstrument(event) === looper.selectedInstrument);
+    const isActive = activeEvents.length > 0;
+    const isStart = activeEvents.some((event) => event.tick === tick);
+    const isSelectedInstrumentActive = Boolean(selectedEvent);
+    const isSelectedInstrumentStart = selectedEvent?.tick === tick;
 
     cell.classList.toggle("is-active", isActive);
     cell.classList.toggle("is-note-start", Boolean(isStart));
-    cell.classList.toggle("is-note-hold", isActive && !isStart);
+    cell.classList.toggle("is-selected-instrument-active", isSelectedInstrumentActive);
+    cell.classList.toggle("is-selected-instrument-start", Boolean(isSelectedInstrumentStart));
+    cell.classList.toggle("is-note-hold", isSelectedInstrumentActive && !isSelectedInstrumentStart);
     cell.setAttribute("aria-pressed", String(isActive));
+    cell.innerHTML = renderInstrumentBands(activeEvents, tick);
   });
 
   renderMinimap();
@@ -1380,6 +1635,26 @@ function renderKeySelect(): void {
     .map((option) => `<option value="${option.value}">${option.label}</option>`)
     .join("");
   keySelect.value = looper.selectedKey;
+}
+
+function renderInstrumentSelect(): void {
+  instrumentSelect.innerHTML = instrumentOptions
+    .map((option) => `<option value="${option.id}" style="color: ${option.color};">${option.label}</option>`)
+    .join("");
+  instrumentSelect.value = looper.selectedInstrument;
+  renderInstrumentControls();
+}
+
+function renderInstrumentControls(): void {
+  const settings = getInstrumentSettings(looper.selectedInstrument);
+  const instrumentColor = getInstrumentColor(looper.selectedInstrument);
+
+  instrumentSwatch.style.background = instrumentColor;
+  instrumentSelect.closest<HTMLElement>(".instrument-editor")?.style.setProperty("--instrument-color", instrumentColor);
+  dynamicsInput.value = String(settings.dynamics);
+  dynamicsValue.textContent = `${settings.dynamics}%`;
+  vibratoInput.value = String(settings.vibrato);
+  vibratoValue.textContent = `${settings.vibrato}%`;
 }
 
 function getSelectedKeyOption(): (typeof keyOptions)[number] | undefined {
@@ -1572,11 +1847,138 @@ function clampBpm(bpm: number): number {
   return Math.min(240, Math.max(40, Math.round(bpm)));
 }
 
-function playNote(note: string, velocity: number, duration: Tone.Unit.Time): void {
+function playNote(instrument: InstrumentId, note: string, velocity: number, duration: Tone.Unit.Time): void {
   void Tone.start().then(async () => {
+    await ensureInstrumentSamples(instrument);
     await Tone.loaded();
-    piano.triggerAttackRelease(note, duration, undefined, velocity);
+    triggerInstrument(instrument, note, duration, undefined, velocity);
   });
+}
+
+function triggerInstrument(instrument: InstrumentId, note: string, duration: Tone.Unit.Time, time?: Tone.Unit.Time, velocity?: number): void {
+  instrumentVoices[instrument]?.sampler.triggerAttackRelease(note, duration, time, velocity);
+}
+
+async function loadNeededInstrumentSamples(): Promise<void> {
+  const neededInstruments = new Set<InstrumentId>([
+    looper.selectedInstrument,
+    ...looper.events.map((event) => getEventInstrument(event))
+  ]);
+
+  await Promise.all(Array.from(neededInstruments, (instrument) => ensureInstrumentSamples(instrument)));
+}
+
+function ensureInstrumentSamples(instrument: InstrumentId): Promise<void> {
+  if (instrumentVoices[instrument]) {
+    return Promise.resolve();
+  }
+
+  const option = getInstrumentOption(instrument);
+
+  if (!option.soundfontName || !option.sampleNotes) {
+    return Promise.resolve();
+  }
+
+  const existingLoad = loadingInstrumentSamples.get(instrument);
+
+  if (existingLoad) {
+    return existingLoad;
+  }
+
+  const load = loadSoundfontScript(option.soundfontName)
+    .then(() => createSampledInstrument(option))
+    .catch(() => {
+      statusText.textContent = `${option.label} samples could not be loaded.`;
+    })
+    .finally(() => {
+      loadingInstrumentSamples.delete(instrument);
+    });
+
+  loadingInstrumentSamples.set(instrument, load);
+
+  return load;
+}
+
+function loadSoundfontScript(soundfontName: string): Promise<void> {
+  if (window.MIDI?.Soundfont?.[soundfontName]) {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+
+    script.src = `${soundfontBaseUrl}${soundfontName}-mp3.js`;
+    script.async = true;
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error(`Could not load ${soundfontName} samples.`));
+    document.head.append(script);
+  });
+}
+
+function createSampledInstrument(option: InstrumentOption): Promise<void> {
+  if (!option.soundfontName || !option.sampleNotes) {
+    return Promise.resolve();
+  }
+
+  const soundfont = window.MIDI?.Soundfont?.[option.soundfontName];
+
+  if (!soundfont) {
+    return Promise.reject(new Error(`Missing ${option.soundfontName} soundfont.`));
+  }
+
+  const urls = option.sampleNotes.reduce<Record<string, string>>((samples, note) => {
+    const sample = soundfont[note];
+
+    if (sample) {
+      samples[note] = sample;
+    }
+
+    return samples;
+  }, {});
+
+  return new Promise((resolve) => {
+    const sampler = new Tone.Sampler({
+      urls,
+      release: option.release,
+      onload: () => resolve()
+    });
+
+    instrumentVoices[option.id] = createInstrumentVoice(option.id, sampler);
+  });
+}
+
+function createInstrumentVoice(instrument: InstrumentId, sampler: Tone.Sampler): InstrumentVoice {
+  const vibrato = new Tone.Vibrato({ frequency: 5.6, depth: 0, wet: 0 });
+  const volume = new Tone.Volume(0);
+  const voice = { sampler, vibrato, volume };
+
+  sampler.connect(vibrato);
+  vibrato.connect(volume);
+  volume.toDestination();
+  applyInstrumentSettingsToVoice(instrument, voice);
+
+  return voice;
+}
+
+function applyInstrumentSettings(instrument: InstrumentId): void {
+  const voice = instrumentVoices[instrument];
+
+  if (!voice) {
+    return;
+  }
+
+  applyInstrumentSettingsToVoice(instrument, voice);
+}
+
+function applyInstrumentSettingsToVoice(instrument: InstrumentId, voice: InstrumentVoice): void {
+  const option = getInstrumentOption(instrument);
+  const settings = getInstrumentSettings(instrument);
+  const dynamicsGain = Math.max(0.001, settings.dynamics / 100);
+  const vibratoAmount = settings.vibrato / 100;
+
+  voice.volume.volume.value = option.volumeDb + 20 * Math.log10(dynamicsGain);
+  voice.vibrato.depth.value = vibratoAmount * 0.35;
+  voice.vibrato.wet.value = vibratoAmount === 0 ? 0 : Math.min(0.7, vibratoAmount);
 }
 
 function renderProgress(): void {
@@ -1780,24 +2182,28 @@ function renderRoll(): void {
       const isKeyRoot = isNoteKeyRoot(note);
       const scaleDegree = getScaleDegree(note);
       const rowCells = slots.map((slot) => {
-        const activeEvent = looper.events.find((event) => {
-          return event.note === note && slot.tick >= event.tick && slot.tick < event.tick + event.durationTicks;
-        });
-        const isActive = Boolean(activeEvent);
-        const isStart = activeEvent?.tick === slot.tick;
+        const activeEvents = getActiveEventsAtTick(note, slot.tick);
+        const selectedEvent = activeEvents.find((event) => getEventInstrument(event) === looper.selectedInstrument);
+        const isActive = activeEvents.length > 0;
+        const isStart = activeEvents.some((event) => event.tick === slot.tick);
+        const isSelectedInstrumentActive = Boolean(selectedEvent);
+        const isSelectedInstrumentStart = selectedEvent?.tick === slot.tick;
         const subbeatLabel = slot.parts > 1 ? `, part ${slot.subdivision + 1} of ${slot.parts}` : "";
+        const instrumentLabel = activeEvents.length > 0
+          ? `, ${activeEvents.map((event) => getInstrumentLabel(getEventInstrument(event))).join(" and ")}`
+          : "";
 
         return `
           <button
-            class="roll-cell ${isActive ? "is-active" : ""} ${isStart ? "is-note-start" : ""} ${isActive && !isStart ? "is-note-hold" : ""} ${slot.subdivision === 0 ? "is-beat-start" : ""} ${slot.subdivision === 0 && isBarStart(slot.step) ? "is-bar-start" : ""} ${isOctaveStart(note) ? "is-octave-start" : ""} ${isBlackKey(note) ? "is-black-key" : ""}"
+            class="roll-cell ${isActive ? "is-active" : ""} ${isStart ? "is-note-start" : ""} ${isSelectedInstrumentActive ? "is-selected-instrument-active" : ""} ${isSelectedInstrumentStart ? "is-selected-instrument-start" : ""} ${isSelectedInstrumentActive && !isSelectedInstrumentStart ? "is-note-hold" : ""} ${slot.subdivision === 0 ? "is-beat-start" : ""} ${slot.subdivision === 0 && isBarStart(slot.step) ? "is-bar-start" : ""} ${isOctaveStart(note) ? "is-octave-start" : ""} ${isBlackKey(note) ? "is-black-key" : ""}"
             type="button"
             aria-pressed="${isActive}"
-            aria-label="${note}, ${formatStep(slot.step)}${subbeatLabel}"
+            aria-label="${note}, ${formatStep(slot.step)}${subbeatLabel}${instrumentLabel}"
             data-note="${note}"
             data-step="${slot.step}"
             data-tick="${slot.tick}"
             data-duration-ticks="${slot.durationTicks}"
-          ></button>
+          >${renderInstrumentBands(activeEvents, slot.tick)}</button>
         `;
       }).join("");
 
@@ -1842,6 +2248,40 @@ function renderMinimap(): void {
   `;
 
   updateMinimapViewport();
+}
+
+function getActiveEventsAtTick(note: string, tick: number): LoopedNote[] {
+  return looper.events
+    .filter((event) => event.note === note && tick >= event.tick && tick < event.tick + event.durationTicks)
+    .sort((left, right) => getInstrumentSortIndex(getEventInstrument(left)) - getInstrumentSortIndex(getEventInstrument(right)));
+}
+
+function getInstrumentSortIndex(instrument: InstrumentId): number {
+  return instrumentOptions.findIndex((option) => option.id === instrument);
+}
+
+function renderInstrumentBands(events: LoopedNote[], tick: number): string {
+  if (events.length === 0) {
+    return "";
+  }
+
+  return `
+    <span class="instrument-bands" aria-hidden="true">
+      ${events.map((event) => {
+        const instrument = getEventInstrument(event);
+        const isStart = event.tick === tick;
+
+        return `
+          <span
+            class="instrument-band ${isStart ? "is-band-start" : "is-band-hold"}"
+            data-instrument="${instrument}"
+            title="${getInstrumentLabel(instrument)}"
+            style="background: ${getInstrumentColor(instrument)};"
+          ></span>
+        `;
+      }).join("")}
+    </span>
+  `;
 }
 
 function updateRollColumns(): void {
@@ -1974,7 +2414,7 @@ function handleMidiMessage(message: MIDIMessageEvent): void {
   const note = Tone.Frequency(noteNumber, "midi").toNote();
 
   if (!pianoRollNotes.includes(note)) {
-    playNote(note, velocityNumber / 127, "8n");
+    playNote(looper.selectedInstrument, note, velocityNumber / 127, "8n");
     statusText.textContent = `${note} is outside the visible octave range.`;
     return;
   }

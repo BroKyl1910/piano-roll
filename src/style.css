@@ -36,15 +36,15 @@ button {
   justify-content: space-between;
   height: 100vh;
   overflow-y: auto;
-  padding: clamp(14px, 2vw, 28px);
+  padding: clamp(10px, 1.4vw, 18px);
   background: rgba(16, 19, 18, 0.96);
   border-right: 1px solid rgba(242, 245, 239, 0.12);
 }
 
 .eyebrow {
-  margin: 0 0 12px;
+  margin: 0 0 8px;
   color: #7fd9b3;
-  font-size: 0.78rem;
+  font-size: 0.72rem;
   font-weight: 800;
   letter-spacing: 0;
   text-transform: uppercase;
@@ -61,8 +61,8 @@ h1 {
 .utility-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
-  margin-top: 20px;
+  gap: 8px;
+  margin-top: 14px;
 }
 
 .file-input {
@@ -71,27 +71,28 @@ h1 {
 
 .beat-editor,
 .loop-editor,
-.key-editor {
+.key-editor,
+.instrument-editor {
   display: grid;
-  gap: 12px;
-  margin-top: 24px;
+  gap: 8px;
+  margin-top: 14px;
   border-top: 1px solid rgba(242, 245, 239, 0.14);
-  padding-top: 18px;
+  padding-top: 12px;
 }
 
 .selected-beat {
   color: #f2f5ef;
-  font-size: 1rem;
+  font-size: 0.9rem;
 }
 
 .division-buttons {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+  gap: 6px;
 }
 
 .division-button {
-  min-height: 40px;
+  min-height: 34px;
   border: 1px solid rgba(242, 245, 239, 0.22);
   border-radius: 8px;
   color: #f2f5ef;
@@ -124,20 +125,20 @@ h1 {
 .loop-range-inputs {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+  gap: 6px;
 }
 
 .loop-range-inputs label {
   display: grid;
-  gap: 6px;
+  gap: 4px;
   color: #95a096;
-  font-size: 0.75rem;
+  font-size: 0.68rem;
   text-transform: uppercase;
 }
 
 .loop-range-inputs input {
   width: 100%;
-  min-height: 38px;
+  min-height: 34px;
   border: 1px solid rgba(242, 245, 239, 0.24);
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.08);
@@ -150,44 +151,102 @@ h1 {
 .loop-checkbox {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   color: #f2f5ef;
+  font-size: 0.85rem;
   font-weight: 800;
 }
 
 .loop-checkbox input {
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   accent-color: #7fd9b3;
 }
 
-.key-editor label {
+.key-editor label,
+.instrument-editor label {
   display: grid;
-  gap: 8px;
+  gap: 6px;
 }
 
-.key-editor select {
-  min-height: 40px;
+.key-editor select,
+.instrument-editor select {
+  min-height: 36px;
+  width: 100%;
   border: 1px solid rgba(242, 245, 239, 0.24);
   border-radius: 8px;
   background: #161b19;
-  color: #f2f5ef;
+  color: var(--instrument-color, #f2f5ef);
   font: inherit;
   font-weight: 800;
   padding: 0 10px;
 }
 
+.key-editor select {
+  color: #f2f5ef;
+}
+
+.instrument-select-shell {
+  position: relative;
+  display: block;
+}
+
+.instrument-select-shell select {
+  padding-left: 34px;
+}
+
+.instrument-swatch {
+  position: absolute;
+  top: 50%;
+  left: 12px;
+  z-index: 1;
+  width: 10px;
+  height: 10px;
+  border: 1px solid rgba(242, 245, 239, 0.72);
+  border-radius: 3px;
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
+.instrument-slider {
+  display: grid;
+  gap: 6px;
+}
+
+.instrument-slider > span {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.instrument-slider strong {
+  color: #f2f5ef;
+  font-size: 0.76rem;
+}
+
+.instrument-slider input {
+  width: 100%;
+  accent-color: var(--instrument-color, #7fd9b3);
+}
+
 .primary-button,
 .secondary-button {
-  min-height: 46px;
+  min-height: 38px;
   border-radius: 8px;
   border: 1px solid rgba(242, 245, 239, 0.22);
-  padding: 0 18px;
+  padding: 0 12px;
   cursor: pointer;
   transition:
     transform 160ms ease,
     background 160ms ease,
     color 160ms ease;
+}
+
+.utility-row .secondary-button {
+  min-height: 36px;
+  padding: 0 10px;
+  font-size: 0.84rem;
 }
 
 .primary-button {
@@ -215,51 +274,51 @@ h1 {
 .meta {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
-  margin-top: 24px;
+  gap: 10px;
+  margin-top: 16px;
 }
 
 .meta-item {
   border-top: 1px solid rgba(242, 245, 239, 0.14);
-  padding-top: 12px;
+  padding-top: 10px;
 }
 
 .meta-label {
   display: block;
   color: #95a096;
-  font-size: 0.75rem;
+  font-size: 0.68rem;
   text-transform: uppercase;
 }
 
 .meta-value {
   display: block;
-  margin-top: 4px;
-  font-size: 1.15rem;
+  margin-top: 3px;
+  font-size: 1rem;
   font-weight: 800;
 }
 
 .tempo-control {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-top: 4px;
+  gap: 6px;
+  margin-top: 3px;
 }
 
 .tempo-control input {
-  width: 86px;
-  min-height: 38px;
+  width: 72px;
+  min-height: 34px;
   border: 1px solid rgba(242, 245, 239, 0.24);
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.08);
   color: #f2f5ef;
   font: inherit;
-  font-size: 1.1rem;
+  font-size: 0.98rem;
   font-weight: 900;
   padding: 0 10px;
 }
 
 .tempo-control span {
-  font-size: 1rem;
+  font-size: 0.9rem;
   font-weight: 900;
 }
 
@@ -658,6 +717,7 @@ h1 {
 }
 
 .roll-cell {
+  position: relative;
   min-height: 30px;
   background: rgba(255, 255, 255, 0.035);
   cursor: pointer;
@@ -679,21 +739,44 @@ h1 {
 }
 
 .roll-cell.is-active {
-  background: #3ca078;
+  background: rgba(255, 255, 255, 0.045);
   box-shadow: inset 0 0 0 2px #101312;
 }
 
 .roll-cell.is-active.is-note-hold {
-  background: #2f755d;
+  background: rgba(255, 255, 255, 0.04);
   box-shadow: inset 0 3px 0 rgba(127, 217, 179, 0.3), inset 0 -3px 0 rgba(127, 217, 179, 0.3);
 }
 
 .roll-cell.is-active.is-black-key {
-  background: #2f8665;
+  background: rgba(255, 255, 255, 0.035);
 }
 
 .roll-cell.is-active.is-black-key.is-note-hold {
-  background: #286c55;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.roll-cell.is-selected-instrument-active {
+  box-shadow: inset 0 0 0 2px rgba(242, 245, 239, 0.7);
+}
+
+.instrument-bands {
+  position: absolute;
+  inset: 3px;
+  display: grid;
+  grid-auto-rows: minmax(0, 1fr);
+  gap: 2px;
+  pointer-events: none;
+}
+
+.instrument-band {
+  min-height: 0;
+  border-radius: 3px;
+  opacity: 0.95;
+}
+
+.instrument-band.is-band-hold {
+  opacity: 0.72;
 }
 
 .roll-cell.is-beat-start {
